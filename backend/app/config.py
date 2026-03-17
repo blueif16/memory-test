@@ -24,6 +24,11 @@ class Config:
     GRAPH_DEPTH = int(os.getenv("GRAPH_DEPTH", "2"))
     MAX_RETRY = int(os.getenv("MAX_RETRY", "2"))
 
+    # Journal Graph RAG
+    ENTITY_RESOLVE_THRESHOLD = float(os.getenv("ENTITY_RESOLVE_THRESHOLD", "0.02"))
+    EDGE_DECAY_RATE = float(os.getenv("EDGE_DECAY_RATE", "0.03"))
+    SCORE_FLOOR_MULTIPLIER = float(os.getenv("SCORE_FLOOR_MULTIPLIER", "0.1"))
+
     # 服务配置
     HOST = os.getenv("HOST", "0.0.0.0")
     PORT = int(os.getenv("PORT", "8000"))
