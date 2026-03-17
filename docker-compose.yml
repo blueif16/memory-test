@@ -17,6 +17,9 @@ services:
       - RRF_K=${RRF_K:-60}
       - GRAPH_DEPTH=${GRAPH_DEPTH:-2}
       - MAX_RETRY=${MAX_RETRY:-2}
+      - ENTITY_RESOLVE_THRESHOLD=${ENTITY_RESOLVE_THRESHOLD:-0.02}
+      - EDGE_DECAY_RATE=${EDGE_DECAY_RATE:-0.03}
+      - SCORE_FLOOR_MULTIPLIER=${SCORE_FLOOR_MULTIPLIER:-0.1}
     volumes:
       - ./backend/app:/app/app
     depends_on:
