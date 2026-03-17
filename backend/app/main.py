@@ -1,15 +1,21 @@
 """
 FastAPI App - RAG API
 """
+import logging
+
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app.config import config
+
+logger = logging.getLogger(__name__)
 
 
 class ChatRequest(BaseModel):
     query: str
     conversation_id: str = "default"
+    user_id: str = ""
 
 
 class IngestRequest(BaseModel):
@@ -24,15 +30,18 @@ class SearchRequest(BaseModel):
 
 app = FastAPI(title="RAG API")
 
-# Default workflow
-from app.graph.workflow import app as agent_app
-from app.services.supabase_ops import supabase_ops
-from app.core.gemini_embeddings import GeminiEmbeddings
-
-_emb = GeminiEmbeddings(
-    model=config.EMBEDDING_MODEL,
-    output_dimensionality=config.EMBEDDING_DIM
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=config.CORS_ORIGINS.split(","),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
+
+# Default workflow
+from app.graph.workflow import app as agent_app, checkpointer
+from app.services.supabase_ops import supabase_ops
+from app.core.providers import get_embeddings
 
 
 @app.post("/chat")
@@ -40,7 +49,7 @@ async def chat(req: ChatRequest):
     """Self-correcting RAG agent."""
     try:
         result = agent_app.invoke(
-            {"question": req.query},
+            {"question": req.query, "user_id": req.user_id},
             config={"configurable": {"thread_id": req.conversation_id}}
         )
         return {
@@ -48,13 +57,14 @@ async def chat(req: ChatRequest):
             "retries": result.get("retry_count", 0)
         }
     except Exception as e:
+        logger.error(f"Chat failed: {e}")
         raise HTTPException(500, str(e))
 
 
 @app.post("/search")
 async def search(req: SearchRequest):
     """Direct search."""
-    vec = _emb.embed_query(req.query)
+    vec = get_embeddings().embed_query(req.query)
     results = supabase_ops.retrieve_context_mesh(req.query, vec)
     return {"results": results[:req.top_k]}
 
@@ -69,7 +79,10 @@ async def ingest(req: IngestRequest, bg: BackgroundTasks):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "persistence": checkpointer is not None,
+    }
 
 
 # ── Journal Graph RAG Endpoints ─────────────────────────────────

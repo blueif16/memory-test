@@ -6,23 +6,11 @@ from __future__ import annotations
 
 import logging
 
-from langchain_google_genai import ChatGoogleGenerativeAI
-
-from app.config import config
 from app.journal.prompts import CONTEXT_DOC_PROMPT
-from app.core.gemini_embeddings import GeminiEmbeddings
+from app.core.providers import get_llm, get_embeddings
 from app.services.journal_ops import journal_ops
 
 logger = logging.getLogger(__name__)
-
-_llm = ChatGoogleGenerativeAI(
-    model=config.CHAT_MODEL,
-    google_api_key=config.GEMINI_API_KEY,
-)
-_emb = GeminiEmbeddings(
-    model=config.EMBEDDING_MODEL,
-    output_dimensionality=config.EMBEDDING_DIM,
-)
 
 
 def rebuild_stale_context_docs(user_id: str) -> int:
@@ -84,7 +72,7 @@ def _rebuild_single(item: dict) -> None:
         connections=connections_text,
     )
 
-    context_doc = _llm.invoke(prompt).content
-    embedding = _emb.embed_query(context_doc)
+    context_doc = get_llm().invoke(prompt).content
+    embedding = get_embeddings().embed_query(context_doc)
 
     journal_ops.update_context_doc(item_id, context_doc, embedding)

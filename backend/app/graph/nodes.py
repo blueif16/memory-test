@@ -24,13 +24,13 @@ def create_nodes(rag: "RAGStore", llm: ChatGoogleGenerativeAI | None = None) -> 
     Returns dict with: retrieve, grade, rewrite, generate
     """
     _llm = llm or ChatGoogleGenerativeAI(model=config.CHAT_MODEL, temperature=0)
-    
+
     def retrieve(state: AgentState) -> dict:
         """Search knowledge base."""
         results = rag.search(state["question"])
         context = "\n\n".join([r.get("content", "") for r in results])
         return {"context": context, "retry_count": state.get("retry_count", 0)}
-    
+
     def grade(state: AgentState) -> dict:
         """Check if context answers the question."""
         prompt = f"""Does this context help answer the question? Reply only 'yes' or 'no'.
@@ -38,16 +38,16 @@ def create_nodes(rag: "RAGStore", llm: ChatGoogleGenerativeAI | None = None) -> 
 Context: {state['context'][:2000]}
 
 Question: {state['question']}"""
-        
+
         response = _llm.invoke([HumanMessage(content=prompt)])
         return {"grade": "yes" if "yes" in response.content.lower() else "no"}
-    
+
     def rewrite(state: AgentState) -> dict:
         """Rewrite query for better retrieval."""
         prompt = f"Rewrite this query to find better results: {state['question']}"
         response = _llm.invoke([HumanMessage(content=prompt)])
         return {"question": response.content.strip(), "retry_count": state["retry_count"] + 1}
-    
+
     def generate(state: AgentState) -> dict:
         """Generate answer from context."""
         prompt = f"""Answer based on this context. If context doesn't help, say so.
@@ -56,49 +56,13 @@ Context:
 {state['context']}
 
 Question: {state['question']}"""
-        
+
         response = _llm.invoke([HumanMessage(content=prompt)])
         return {"messages": [response]}
-    
+
     return {
         "retrieve": retrieve,
         "grade": grade,
         "rewrite": rewrite,
         "generate": generate
     }
-
-
-# Standalone nodes using default config (backward compat)
-from app.services.supabase_ops import supabase_ops
-from app.core.gemini_embeddings import GeminiEmbeddings
-
-_emb = GeminiEmbeddings(
-    model=config.EMBEDDING_MODEL,
-    output_dimensionality=config.EMBEDDING_DIM
-)
-_llm = ChatGoogleGenerativeAI(model=config.CHAT_MODEL, temperature=0)
-
-
-def retrieve_node(state: AgentState) -> dict:
-    vec = _emb.embed_query(state["question"])
-    results = supabase_ops.retrieve_context_mesh(state["question"], vec)
-    context = "\n\n".join([r.get("content", "") for r in results])
-    return {"context": context, "retry_count": state.get("retry_count", 0)}
-
-
-def grade_documents_node(state: AgentState) -> dict:
-    prompt = f"Does this context help answer the question? Reply 'yes' or 'no'.\nContext: {state['context'][:2000]}\nQuestion: {state['question']}"
-    response = _llm.invoke([HumanMessage(content=prompt)])
-    return {"grade": "yes" if "yes" in response.content.lower() else "no"}
-
-
-def transform_query_node(state: AgentState) -> dict:
-    prompt = f"Rewrite this query for better search results: {state['question']}"
-    response = _llm.invoke([HumanMessage(content=prompt)])
-    return {"question": response.content.strip(), "retry_count": state["retry_count"] + 1}
-
-
-def generate_node(state: AgentState) -> dict:
-    prompt = f"Answer based on context:\n\n{state['context']}\n\nQuestion: {state['question']}"
-    response = _llm.invoke([HumanMessage(content=prompt)])
-    return {"messages": [response]}

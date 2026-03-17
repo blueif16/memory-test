@@ -6,13 +6,14 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from supabase import create_client, Client
+from supabase import Client
 from app.config import config
+from app.services import get_supabase_client
 
 
 class JournalOps:
     def __init__(self):
-        self.client: Client = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
+        self.client: Client = get_supabase_client()
 
     # ── Domain Items ────────────────────────────────────────────
 

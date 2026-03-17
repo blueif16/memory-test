@@ -2,25 +2,29 @@
 LangGraph Conditional Edges - Decision Logic
 =============================================
 """
+import logging
+
 from app.graph.state import AgentState
 from app.config import config
+
+logger = logging.getLogger(__name__)
 
 
 def decide_to_generate(state: AgentState) -> str:
     """
     Conditional edge: decide whether to generate or retry.
-    
+
     Returns:
         "generate" - if context is relevant OR max retries reached
-        "transform_query" - if context needs improvement and retries remain
+        "rewrite" - if context needs improvement and retries remain
     """
     if state["grade"] == "yes":
-        print("---DECISION: CONTEXT RELEVANT, GENERATING---")
+        logger.debug("Decision: context relevant, generating")
         return "generate"
-    
+
     if state["retry_count"] >= config.MAX_RETRY:
-        print(f"---DECISION: MAX RETRIES ({config.MAX_RETRY}) REACHED, GENERATING ANYWAY---")
+        logger.debug(f"Decision: max retries ({config.MAX_RETRY}) reached, generating anyway")
         return "generate"
-    
-    print("---DECISION: CONTEXT NOT RELEVANT, REWRITING QUERY---")
-    return "transform_query"
+
+    logger.debug("Decision: context not relevant, rewriting query")
+    return "rewrite"

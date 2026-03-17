@@ -5,30 +5,19 @@ extract → resolve → update_graph → rebuild_context → END
 """
 from __future__ import annotations
 
-import json
 import logging
 
 from langgraph.graph import StateGraph, END
-from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field
 
 from app.config import config
 from app.journal.state import IngestState
 from app.journal.prompts import EXTRACT_PROMPT
-from app.core.gemini_embeddings import GeminiEmbeddings
+from app.core.providers import get_llm, get_embeddings
 from app.services.journal_ops import journal_ops
 from app.journal.context_builder import rebuild_stale_context_docs
 
 logger = logging.getLogger(__name__)
-
-_llm = ChatGoogleGenerativeAI(
-    model=config.CHAT_MODEL,
-    google_api_key=config.GEMINI_API_KEY,
-)
-_emb = GeminiEmbeddings(
-    model=config.EMBEDDING_MODEL,
-    output_dimensionality=config.EMBEDDING_DIM,
-)
 
 
 # ── Pydantic models for structured extraction ──────────────────
@@ -67,7 +56,7 @@ def extract_node(state: IngestState) -> dict:
         diary_entry=state["diary_entry"],
     )
     try:
-        structured_llm = _llm.with_structured_output(ExtractionResult)
+        structured_llm = get_llm().with_structured_output(ExtractionResult)
         result = structured_llm.invoke(prompt)
         extractions = [e.model_dump() for e in result.extractions]
         return {"extractions": extractions, "errors": []}
@@ -85,7 +74,7 @@ def resolve_node(state: IngestState) -> dict:
 
     for ext in state["extractions"]:
         try:
-            embedding = _emb.embed_query(ext["mention"])
+            embedding = get_embeddings().embed_query(ext["mention"])
             candidates = journal_ops.resolve_entity(
                 ext["mention"], embedding, state["user_id"], match_count=3
             )
