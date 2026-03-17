@@ -1,11 +1,13 @@
-from supabase import create_client, Client
+from supabase import Client
 from app.config import config
+from app.services import get_supabase_client
+
 
 class SupabaseOps:
     """Supabase 操作封装"""
 
     def __init__(self):
-        self.client: Client = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
+        self.client: Client = get_supabase_client()
 
     def retrieve_context_mesh(self, query_text: str, query_embedding: list[float]) -> list[dict]:
         """调用混合检索函数"""

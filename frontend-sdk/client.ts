@@ -5,7 +5,7 @@ class SupabaseGraphRAGClient {
     this.baseUrl = baseUrl;
   }
 
-  async chat(conversationId: string, query: string, userId: string): Promise<any> {
+  async chat(conversationId: string, query: string, userId: string = ''): Promise<any> {
     const response = await fetch(`${this.baseUrl}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -14,11 +14,11 @@ class SupabaseGraphRAGClient {
     return response.json();
   }
 
-  async ingest(text: string, metadata: Record<string, any>): Promise<any> {
+  async ingest(content: string, source?: string): Promise<any> {
     const response = await fetch(`${this.baseUrl}/ingest`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, metadata })
+      body: JSON.stringify({ content, source })
     });
     return response.json();
   }
