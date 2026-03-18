@@ -1,196 +1,324 @@
-# Supabase RAG Scaffold
+# Journal Graph RAG
 
-**The source of truth for LLM-assisted RAG setup.**
+A temporal knowledge graph system for personal journal entries with autonomous optimization. Extracts entities, tracks relationships over time, and generates intelligent daily briefings.
 
-When you or an LLM needs to add RAG to a project, reference this scaffold. Don't invent new patterns - use what's here.
+## What It Does
 
-## Philosophy
-
-- **Content is rich** - Self-describing natural text. Embeddings capture everything.
-- **Metadata is minimal** - Just `source` and `type` for reference, not filtering.
-- **Power from indexing** - RRF (BM25 + Vector) + Graph does the work.
-- **Gemini embeddings** - 使用 Gemini API 的 768 维 embeddings，性能与质量平衡。
+- **Temporal Entity Tracking**: Extracts people, goals, projects, events from journal entries
+- **Decay-Weighted Graph**: Relationships fade over time, keeping briefings relevant
+- **Smart Briefings**: Morning summaries of what matters today based on recency, upcoming events, and graph connections
+- **Autonomous Optimization**: Self-tuning evaluation loop that improves extraction quality
 
 ## Quick Start
 
-```python
-from app.core import RAGStore
+### 1. Setup
 
-# Initialize
-rag = RAGStore(namespace="my_knowledge")
+```bash
+# Install dependencies
+cd backend
+pip install -e .
 
-# Ingest rich, self-describing content
-rag.ingest("""
-Product Hunt hook pacing: Fast energetic openings with 1.5-2 second cuts
-in the first 10 seconds. High energy, immediate value prop, no slow builds.
-Cold open straight into product. Works for SaaS launches, tool demos.
-""", source="ph_analysis_2025")
+# Configure environment
+cp .env.example .env
+# Edit .env with your Supabase and Gemini API keys
 
-# Search by feeling/semantics
-results = rag.search("energetic fast opening style")
+# Run migrations in Supabase SQL Editor
+supabase/migrations/20260126_init_gemini_schema.sql
+supabase/migrations/20260317_journal_graph_schema.sql
+supabase/migrations/20260318_parameterize_scoring.sql
 ```
 
-## Environment Setup
+### 2. Run the API
 
-配置 `.env` 文件：
+```bash
+cd backend
+python -m app.main
+```
+
+### 3. Ingest a Journal Entry
+
+```bash
+curl -X POST http://localhost:8000/journal/ingest \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "alice",
+    "content": "Had coffee with Sarah today. She mentioned her startup launch next week. Need to finish the ML project by Friday.",
+    "entry_date": "2026-03-17"
+  }'
+```
+
+### 4. Get Morning Briefing
+
+```bash
+curl -X POST http://localhost:8000/journal/extract \
+  -H "Content-Type: application/json" \
+  -d '{"user_id": "alice"}'
+```
+
+## Architecture
+
+### Core Components
+
+- **Ingest Pipeline** (`backend/app/journal/ingest_workflow.py`): LangGraph workflow that extracts entities, resolves them against existing graph, updates relationships
+- **Scoring System** (`backend/app/journal/scoring.py`): Ranks entities by recency decay, neighbor activity, upcoming events, mention frequency
+- **Context Builder** (`backend/app/journal/context_builder.py`): Generates rich summaries from interaction history for better entity resolution
+- **Visualization** (`backend/app/visualization/`): Temporal graph viewer with date slider
+
+### Database Schema
+
+- `domain_items`: Graph nodes (people, goals, projects, places, habits) with lifecycle states
+- `edges`: Weighted relationships with time decay
+- `upcoming_events`: Future events tied to entities with auto-resolution
+- `interactions`: Append-only log of entity mentions
+- `graph_snapshots`: Periodic captures for visualization and evaluation
+- `diary_entries`: Raw journal content
+
+## Autonomous Optimization
+
+The system includes a Karpathy-style autoresearch loop that tunes parameters to maximize extraction quality.
+
+### How It Works
+
+1. **Frozen Evaluation**: Generates a 30-day synthetic journal scenario once
+2. **Experiment Loop**: For each iteration:
+   - Commits current parameters to git
+   - Runs full scenario with current knobs
+   - LLM judge scores each day's briefing (1-5)
+   - Computes mean score as the metric
+   - LLM planner proposes next parameter change
+   - Writes new knobs.py and repeats
+3. **Git Tracking**: Each experiment is a commit, best configs are tagged
+
+### Tunable Parameters (`backend/app/journal/eval/knobs.py`)
+
+**Scoring Weights** (how signals combine):
+- `recency_weight`: Recent mentions (default: 2.0)
+- `neighbor_weight`: Graph neighbor activity (default: 1.0)
+- `event_weight`: Upcoming event proximity (default: 3.0)
+- `freq_weight`: Total mention frequency (default: 0.5)
+
+**Decay Rates** (how fast signals fade):
+- `edge_decay_rate`: Edge/recency decay per day (default: 0.03)
+- `event_decay_rate`: Event proximity decay per day (default: 0.1)
+
+**Thresholds**:
+- `score_floor_multiplier`: Hide items below median × this (default: 0.1)
+- `entity_resolve_threshold`: RRF score to match existing entity (default: 0.02)
+- `rrf_k`: RRF fusion constant (default: 60)
+
+**Prompts**:
+- `extract_prompt`: Override extraction prompt (empty = default)
+- `context_doc_prompt`: Override context doc prompt (empty = default)
+
+### Running Optimization
+
+```bash
+cd backend
+
+# Run 10 iterations on college student scenario
+python -m app.journal.eval.loop --iterations 10 --archetype college_student --days 30
+
+# Results logged to backend/app/journal/eval/results.tsv
+# Best config tagged in git as best-{score}
+```
+
+### Monitoring Progress
+
+```bash
+# View results
+cat backend/app/journal/eval/results.tsv
+
+# Check git history
+git log --oneline | grep experiment
+
+# Restore best config
+git checkout best-4.200  # or whatever tag
+```
+
+### Strategy Guide
+
+The LLM planner follows `backend/app/journal/eval/program.md`:
+
+- Changes ONE parameter per experiment for clear attribution
+- Makes moderate changes (25-50% of current value)
+- Reviews all prior results before deciding
+- Uses failure-pattern-to-fix mappings:
+  - Missing deadlines → increase `event_weight`
+  - Stale items appearing → increase `edge_decay_rate`
+  - Wrong entity matches → adjust `entity_resolve_threshold`
+  - Briefing too cluttered → increase `score_floor_multiplier`
+
+## API Endpoints
+
+### Journal Operations
+
+- `POST /journal/ingest`: Save diary entry and extract entities
+- `POST /journal/extract`: Generate morning briefing
+- `POST /journal/score`: Score all active items
+- `GET /journal/graph/{user_id}`: Fetch active items
+- `GET /journal/snapshots/{user_id}`: Retrieve snapshots for date range
+- `GET /journal/visualize/{user_id}`: Generate temporal graph HTML
+
+### RAG Operations
+
+- `POST /chat`: Self-correcting RAG agent
+- `POST /search`: Direct hybrid search
+- `POST /ingest`: Ingest content into RAG store
+
+### Evaluation
+
+- `POST /journal/eval/run`: Run full eval loop (dev only)
+
+## Debug Tools
+
+```bash
+# Install debug extras
+pip install -e ".[debug]"
+
+# Visualize knowledge graph
+rag-debug visualize --namespace video_styles --output graph.html
+
+# Debug search query
+rag-debug debug "energetic fast cuts" --namespace video_styles
+
+# Run robustness tests
+rag-debug test --namespace video_styles
+```
+
+See `backend/app/debug/README.md` for full debug toolkit documentation.
+
+## Project Structure
+
+```
+├── backend/
+│   ├── app/
+│   │   ├── core/              # Portable RAG module
+│   │   │   ├── rag_store.py   # RAGStore class
+│   │   │   ├── gemini_embeddings.py
+│   │   │   ├── providers.py   # Shared LLM/embeddings
+│   │   │   └── adapters.py    # Data extraction
+│   │   ├── journal/           # Journal graph system
+│   │   │   ├── ingest_workflow.py
+│   │   │   ├── context_builder.py
+│   │   │   ├── scoring.py
+│   │   │   ├── extraction.py
+│   │   │   └── eval/          # Optimization loop
+│   │   │       ├── loop.py    # Main optimization loop
+│   │   │       ├── knobs.py   # Tunable parameters
+│   │   │       ├── metric.py  # Scalar score computation
+│   │   │       ├── runner.py  # Scenario execution
+│   │   │       ├── judge.py   # LLM evaluation
+│   │   │       └── program.md # Strategy guide
+│   │   ├── graph/             # LangGraph workflow
+│   │   ├── services/          # Supabase operations
+│   │   ├── visualization/     # Graph rendering
+│   │   └── main.py            # FastAPI app
+│   └── pyproject.toml
+├── supabase/
+│   └── migrations/            # SQL schema
+├── SPECIFICATION.md           # RAG setup guide for LLMs
+└── README.md
+```
+
+## Configuration
+
+Environment variables (`.env`):
 
 ```bash
 # Supabase
 SUPABASE_URL=https://xxx.supabase.co
-# 推荐使用新的 secret key 格式 (从 Dashboard > Settings > API > Secret key 获取)
-SUPABASE_SECRET_KEY=sb_secret_your_secret_key_here
+SUPABASE_SECRET_KEY=sb_secret_your_key_here
 DATABASE_URL=postgresql://postgres:password@db.xxx.supabase.co:5432/postgres
 
 # Gemini API
 GEMINI_API_KEY=your-gemini-api-key
 
-# Optional
+# Optional tuning
 EMBEDDING_MODEL=gemini-embedding-001
 EMBEDDING_DIM=768
-CHAT_MODEL=gemini-2.0-flash-exp  # 用于查询改写、相关性评分、答案生成
+CHAT_MODEL=gemini-2.0-flash-exp
 MATCH_COUNT=5
 RRF_K=60
 GRAPH_DEPTH=2
-MAX_RETRY=2
 ```
 
-## For LLMs: Read SPECIFICATION.md First
-
-See [SPECIFICATION.md](./SPECIFICATION.md) for:
-- Decision flow for setting up RAG
-- Research prompt templates
-- Expected content formats
-- Examples by use case
-
-## Setup
-
-1. **Run SQL migration**
-   ```bash
-   # 在 Supabase SQL Editor 中运行
-   supabase/migrations/20260126_init_gemini_schema.sql
-   ```
-
-2. **Install dependencies**
-   ```bash
-   cd backend
-   pip install -e .
-   ```
-
-3. **Start ingesting**
-
-## Core API
-
-```python
-from app.core import RAGStore
-
-rag = RAGStore(namespace="my_project")
-
-# Ingest
-rag.ingest("Content here...", source="optional", type="optional")
-rag.ingest_batch(["content 1", "content 2", ...])
-
-# Search (SOTA: hybrid RRF + graph)
-results = rag.search("query")
-
-# Graph edges
-rag.add_relation(id1, id2, "relates_to")
-
-# Utils
-rag.stats()
-rag.delete_all()
-```
-
-## Data Adapters
-
-```python
-from app.core import DataAdapter
-
-# From various sources → list of strings
-contents = DataAdapter.from_json_file("data.json", content_field="text")
-contents = DataAdapter.from_csv("data.csv", content_column="body")
-contents = DataAdapter.from_api_response(response, content_field="description")
-contents = DataAdapter.from_text_chunks(long_text, chunk_size=1500)
-
-# Then ingest
-rag.ingest_batch(contents, source="my_source")
-```
-
-## LangGraph Integration
-
-```python
-from app.core import RAGStore, create_search_tool, create_search_fn
-
-rag = RAGStore(namespace="agent_kb")
-
-# As tool (for ReAct agents)
-tool = create_search_tool(rag, name="search_kb")
-agent = create_react_agent(llm, tools=[tool])
-
-# As function (for custom nodes)
-search = create_search_fn(rag)
-def retrieve_node(state):
-    return {"context": search(state["question"])}
-```
-
-## Project Structure
-
-```
-├── SPECIFICATION.md      # LLM instruction manual
-├── backend/app/core/     # The portable module
-│   ├── rag_store.py      # RAGStore class
-│   ├── gemini_embeddings.py  # Gemini embeddings 封装
-│   ├── tool_factory.py   # LangGraph tools
-│   └── adapters.py       # Data extraction
-└── supabase/migrations/  # SQL schema
-```
-
-## Clone Into Your Project
+## Development
 
 ```bash
-cp -r backend/app/core your_project/rag
+# Run tests
+cd backend
+pytest
+
+# Start with hot reload
+uvicorn app.main:app --reload
+
+# Format code
+ruff format .
 ```
 
-Then `from rag import RAGStore`.
+## How the Optimization Loop Works
 
-## Supabase API Key 配置
+### Phase 1: Scenario Generation (Once)
 
-### 推荐方式（新）
-使用 Supabase Dashboard 生成的新格式 secret key（`sb_secret_...`）：
-
-1. 进入 Supabase Dashboard > Project Settings > API > API Keys
-2. 点击 "Create new API Keys"
-3. 复制 "Secret key" 的值（以 `sb_secret_` 开头）
-4. 在 `.env` 中设置：
-   ```bash
-   SUPABASE_SECRET_KEY=sb_secret_your_actual_key_here
-   ```
-
-### 向后兼容
-如果你已有旧的 service_role JWT key，仍然可以使用：
 ```bash
-SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+# LLM generates a 30-day synthetic journal for "college_student" archetype
+# Each day has:
+# - Journal entry text
+# - Rubric with expected entities/events to surface
+# Cached in backend/app/journal/eval/scenario_cache.json
 ```
 
-代码会优先使用 `SUPABASE_SECRET_KEY`，如果未设置则回退到 `SUPABASE_KEY`。
+### Phase 2: Experiment Iteration (N times)
 
-### 新格式的优势
-- 易于轮换：无需重启服务即可更换密钥
-- 更安全：无法在浏览器中使用（返回 401）
-- 独立性：不依赖 JWT secret
-- 灵活性：可为不同后端组件创建多个密钥
+```
+For iteration i in 1..N:
+  1. Load current knobs.py
+  2. Git commit: "experiment-{i}: recency_weight=2.5"
+  3. Create fresh test user (UUID)
+  4. Run 30-day scenario:
+     - Each morning: extract briefing with current knobs
+     - Each evening: ingest journal entry
+  5. LLM judge scores each day's briefing (1-5 scale)
+  6. Compute mean score across 30 days
+  7. Log to results.tsv
+  8. If best score: git tag "best-{score}"
+  9. LLM planner reads program.md + results.tsv
+  10. Proposes next parameter change
+  11. Write new knobs.py
+```
 
-## Technical Details
+### Phase 3: Analysis
 
-### Embeddings
-- 模型: `gemini-embedding-001`
-- 维度: 768 (推荐值，平衡性能和质量)
-- 任务类型:
-  - 查询: `RETRIEVAL_QUERY`
-  - 文档: `RETRIEVAL_DOCUMENT`
-- 归一化: 自动对非 3072 维度的 embeddings 进行归一化
+```bash
+# View all experiments
+cat backend/app/journal/eval/results.tsv
 
-### Vector Search
-- 索引类型: HNSW (Hierarchical Navigable Small World)
-- 距离度量: Cosine similarity
-- 混合检索: RRF (Reciprocal Rank Fusion) 结合 BM25 和向量搜索
-- 图遍历: 支持多层关系扩展
+# Restore best configuration
+git checkout best-4.350
+
+# Or manually edit knobs.py based on insights
+```
+
+### What Gets Optimized
+
+The judge evaluates each day's briefing against the rubric:
+- **Coverage**: Did it surface expected entities/events?
+- **Precision**: Did it avoid stale/irrelevant items?
+- **Insight**: Did it make useful connections?
+
+The metric is simply: `mean(judge_scores)` across all 30 days.
+
+### Example Optimization Run
+
+```
+Iteration 0: score=3.2 (defaults)
+Iteration 1: event_weight=4.0 → score=3.5 (better event coverage)
+Iteration 2: edge_decay_rate=0.05 → score=3.8 (fewer stale items)
+Iteration 3: score_floor_multiplier=0.15 → score=4.1 (cleaner briefings)
+...
+Iteration 9: best score=4.3
+```
+
+## License
+
+MIT
