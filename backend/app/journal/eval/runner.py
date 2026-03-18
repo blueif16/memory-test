@@ -12,13 +12,16 @@ from app.journal.extraction import run_extraction
 from app.journal.eval.scenario_generator import generate_scenario
 from app.journal.eval.judge import judge_scenario
 from app.journal.eval.aggregator import aggregate_diagnoses
+from app.journal.eval.metric import compute_metric
 from app.services.journal_ops import journal_ops
 from app.visualization.snapshot import capture_snapshot
 
 logger = logging.getLogger(__name__)
 
 
-def run_scenario(scenario: dict, user_id: str) -> list[dict]:
+def run_scenario(
+    scenario: dict, user_id: str, knobs: dict | None = None,
+) -> list[dict]:
     """Execute scenario day by day. Returns per-day results.
 
     For each day:
@@ -43,7 +46,7 @@ def run_scenario(scenario: dict, user_id: str) -> list[dict]:
 
         # 2. Run extraction (morning briefing BEFORE today's journal)
         now = datetime.fromisoformat(entry_date)
-        extraction_text = run_extraction(user_id, now)
+        extraction_text = run_extraction(user_id, now, knobs=knobs)
 
         # 3. Save graph snapshot
         try:
@@ -53,7 +56,7 @@ def run_scenario(scenario: dict, user_id: str) -> list[dict]:
             snapshot = None
 
         # 4. Ingest today's journal entry
-        ingest_result = run_ingest(user_id, journal_entry, entry_date)
+        ingest_result = run_ingest(user_id, journal_entry, entry_date, knobs=knobs)
 
         results.append({
             "day": day_num,
@@ -66,8 +69,16 @@ def run_scenario(scenario: dict, user_id: str) -> list[dict]:
     return results
 
 
-def run_eval_loop(archetype: str = "college_student", num_days: int = 30) -> dict:
-    """Full eval: generate scenario → run → judge → aggregate."""
+def run_eval_loop(
+    archetype: str = "college_student",
+    num_days: int = 30,
+    knobs: dict | None = None,
+) -> dict:
+    """Full eval: generate scenario → run → judge → aggregate.
+
+    Returns dict with per-day judgements (structured), systemic issues,
+    and a scalar metric score.
+    """
     # Generate test data
     scenario = generate_scenario(archetype, num_days)
 
@@ -75,18 +86,22 @@ def run_eval_loop(archetype: str = "college_student", num_days: int = 30) -> dic
     test_user_id = str(uuid.uuid4())
 
     # Run day-by-day
-    results = run_scenario(scenario, test_user_id)
+    results = run_scenario(scenario, test_user_id, knobs=knobs)
 
-    # Judge each day
-    diagnoses = judge_scenario(results)
+    # Judge each day (structured dicts with score)
+    judgements = judge_scenario(results)
+
+    # Compute scalar metric
+    score = compute_metric(judgements)
 
     # Aggregate systemic issues
-    systemic = aggregate_diagnoses(diagnoses)
+    systemic = aggregate_diagnoses(judgements)
 
     return {
         "archetype": archetype,
         "num_days": num_days,
         "test_user_id": test_user_id,
-        "per_day_diagnoses": diagnoses,
+        "per_day_judgements": judgements,
         "systemic_issues": systemic,
+        "score": score,
     }

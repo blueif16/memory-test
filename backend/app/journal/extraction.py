@@ -10,12 +10,12 @@ from collections import defaultdict
 from app.services.journal_ops import journal_ops
 
 
-def run_extraction(user_id: str, now: datetime | None = None) -> str:
+def run_extraction(user_id: str, now: datetime | None = None, knobs: dict | None = None) -> str:
     """Produce plain-text briefing for fortune-telling prompt."""
     now = now or datetime.utcnow()
     now_str = now.isoformat()
 
-    data = journal_ops.extract_briefing_data(user_id, now_str)
+    data = journal_ops.extract_briefing_data(user_id, now_str, knobs=knobs)
     completed = journal_ops.get_recently_completed(user_id, days=7)
 
     return format_briefing(data, completed, now)

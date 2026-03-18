@@ -108,13 +108,17 @@ class JournalOps:
         query_embedding: list[float],
         user_id: str,
         match_count: int = 5,
+        knobs: dict | None = None,
     ) -> list[dict]:
-        resp = self.client.rpc("resolve_domain_item", {
+        params = {
             "query_text": query_text,
             "query_embedding": query_embedding,
             "p_user_id": user_id,
             "match_count": match_count,
-        }).execute()
+        }
+        if knobs:
+            params["p_rrf_k"] = knobs.get("rrf_k", 60)
+        resp = self.client.rpc("resolve_domain_item", params).execute()
         return resp.data
 
     # ── Edges ───────────────────────────────────────────────────
@@ -264,17 +268,37 @@ class JournalOps:
 
     # ── Scoring + Extraction (SQL RPC) ──────────────────────────
 
-    def score_items(self, user_id: str, now: str | None = None) -> list[dict]:
+    def score_items(self, user_id: str, now: str | None = None, knobs: dict | None = None) -> list[dict]:
         params: dict = {"p_user_id": user_id}
         if now:
             params["p_now"] = now
+        if knobs:
+            params.update({
+                "p_recency_weight": knobs["recency_weight"],
+                "p_neighbor_weight": knobs["neighbor_weight"],
+                "p_event_weight": knobs["event_weight"],
+                "p_freq_weight": knobs["freq_weight"],
+                "p_edge_decay_rate": knobs["edge_decay_rate"],
+                "p_event_decay_rate": knobs["event_decay_rate"],
+                "p_score_floor_mult": knobs["score_floor_multiplier"],
+            })
         resp = self.client.rpc("score_domain_items", params).execute()
         return resp.data
 
-    def extract_briefing_data(self, user_id: str, now: str | None = None) -> list[dict]:
+    def extract_briefing_data(self, user_id: str, now: str | None = None, knobs: dict | None = None) -> list[dict]:
         params: dict = {"p_user_id": user_id}
         if now:
             params["p_now"] = now
+        if knobs:
+            params.update({
+                "p_recency_weight": knobs["recency_weight"],
+                "p_neighbor_weight": knobs["neighbor_weight"],
+                "p_event_weight": knobs["event_weight"],
+                "p_freq_weight": knobs["freq_weight"],
+                "p_edge_decay_rate": knobs["edge_decay_rate"],
+                "p_event_decay_rate": knobs["event_decay_rate"],
+                "p_score_floor_mult": knobs["score_floor_multiplier"],
+            })
         resp = self.client.rpc("extract_briefing_data", params).execute()
         return resp.data
 
