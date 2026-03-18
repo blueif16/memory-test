@@ -1,7 +1,9 @@
 """
 LangGraph state definitions for journal pipelines.
 """
-from typing_extensions import TypedDict
+from typing import Any
+
+from typing_extensions import TypedDict, NotRequired
 
 
 class IngestState(TypedDict):
@@ -15,3 +17,4 @@ class IngestState(TypedDict):
     #                    state_change: str|None, relations: [{mention, relation}]}
     processed_count: int
     errors: list[str]
+    knobs: NotRequired[dict[str, Any]]  # Optional tunable parameters from eval loop

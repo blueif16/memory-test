@@ -71,14 +71,18 @@ def resolve_node(state: IngestState) -> dict:
     """Resolve each extracted mention to an existing domain_item or mark as new."""
     resolved = []
     errors = list(state.get("errors", []))
+    knobs = state.get("knobs")
+    threshold = knobs["entity_resolve_threshold"] if knobs else config.ENTITY_RESOLVE_THRESHOLD
+    knobs_dict = knobs if knobs else None
 
     for ext in state["extractions"]:
         try:
             embedding = get_embeddings().embed_query(ext["mention"])
             candidates = journal_ops.resolve_entity(
-                ext["mention"], embedding, state["user_id"], match_count=3
+                ext["mention"], embedding, state["user_id"], match_count=3,
+                knobs=knobs_dict,
             )
-            if candidates and candidates[0]["score"] > config.ENTITY_RESOLVE_THRESHOLD:
+            if candidates and candidates[0]["score"] > threshold:
                 ext["is_new"] = False
                 ext["resolved_id"] = candidates[0]["id"]
             else:
@@ -202,11 +206,11 @@ def create_ingest_workflow():
 ingest_app = create_ingest_workflow()
 
 
-def run_ingest(user_id: str, content: str, entry_date: str) -> dict:
+def run_ingest(user_id: str, content: str, entry_date: str, knobs: dict | None = None) -> dict:
     """Full ingest: save diary entry, run pipeline, return results."""
     diary = journal_ops.save_diary_entry(user_id, content, entry_date)
 
-    result = ingest_app.invoke({
+    init_state: dict = {
         "diary_entry": content,
         "diary_id": diary["id"],
         "user_id": user_id,
@@ -214,7 +218,11 @@ def run_ingest(user_id: str, content: str, entry_date: str) -> dict:
         "extractions": [],
         "processed_count": 0,
         "errors": [],
-    })
+    }
+    if knobs:
+        init_state["knobs"] = knobs
+
+    result = ingest_app.invoke(init_state)
 
     return {
         "diary_id": diary["id"],

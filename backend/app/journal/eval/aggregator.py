@@ -40,11 +40,32 @@ Be actionable. Point to specific code/SQL components.
 """
 
 
-def aggregate_diagnoses(diagnoses: list[str], num_days: int | None = None) -> str:
-    """LLM reads all diagnoses, identifies systemic issues."""
+def aggregate_diagnoses(diagnoses: list[dict | str], num_days: int | None = None) -> str:
+    """LLM reads all diagnoses, identifies systemic issues.
+
+    Accepts either plain-text strings (legacy) or structured dicts with
+    an 'explanation' key (new judge output).
+    """
     num_days = num_days or len(diagnoses)
+
+    def _to_text(d: dict | str) -> str:
+        if isinstance(d, dict):
+            parts = [f"Score: {d.get('score', '?')}/5"]
+            if d.get("covered_good"):
+                parts.append(f"Covered good: {', '.join(d['covered_good'])}")
+            if d.get("missing_critical"):
+                parts.append(f"Missing critical: {', '.join(d['missing_critical'])}")
+            if d.get("false_positives"):
+                parts.append(f"False positives: {', '.join(d['false_positives'])}")
+            if d.get("root_cause"):
+                parts.append(f"Root cause: {d['root_cause']}")
+            if d.get("explanation"):
+                parts.append(d["explanation"])
+            return "\n".join(parts)
+        return str(d)
+
     diagnoses_text = "\n\n---\n\n".join(
-        f"### Day {i + 1}\n{d}" for i, d in enumerate(diagnoses)
+        f"### Day {i + 1}\n{_to_text(d)}" for i, d in enumerate(diagnoses)
     )
     prompt = AGGREGATE_PROMPT.format(
         num_days=num_days,
