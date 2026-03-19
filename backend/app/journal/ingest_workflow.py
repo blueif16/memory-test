@@ -127,10 +127,19 @@ def update_graph_node(state: IngestState) -> dict:
                     domain=ext["domain"],
                     item_type=ext["entity_type"],
                     summary=ext["snippet"],
+                    created_at=state["entry_date"],
                 )
                 item_id = item["id"]
+                logger.info(
+                    "  NEW node: %s (domain=%s, type=%s, id=%s)",
+                    ext["mention"], ext["domain"], ext["entity_type"], item_id,
+                )
             else:
                 item_id = ext["resolved_id"]
+                logger.info(
+                    "  EXISTING node: %s → resolved to %s",
+                    ext["mention"], item_id,
+                )
 
             mention_to_id[ext["mention"]] = item_id
 
@@ -140,6 +149,10 @@ def update_graph_node(state: IngestState) -> dict:
                 diary_id=diary_id,
                 snippet=ext["snippet"],
                 noted_at=state["entry_date"],
+            )
+            logger.info(
+                "  + interaction for %s (noted_at=%s)",
+                ext["mention"], state["entry_date"],
             )
 
             # Add upcoming events
@@ -151,11 +164,19 @@ def update_graph_node(state: IngestState) -> dict:
                     detail=ev.get("detail", ""),
                     source_diary_id=diary_id,
                 )
+                logger.info(
+                    "  + event for %s: %s on %s",
+                    ext["mention"], ev["label"], ev["date"],
+                )
 
             # Handle state changes
             if ext.get("state_change") in ("completed", "abandoned"):
                 journal_ops.update_lifecycle(
                     item_id, ext["state_change"], ext["snippet"]
+                )
+                logger.info(
+                    "  ~ lifecycle change for %s → %s",
+                    ext["mention"], ext["state_change"],
                 )
 
             processed += 1
@@ -164,6 +185,7 @@ def update_graph_node(state: IngestState) -> dict:
             errors.append(f"update({ext['mention']}): {e}")
 
     # Create/reinforce edges between co-mentioned entities
+    edge_count = 0
     for ext in state["extractions"]:
         src_id = mention_to_id.get(ext["mention"])
         if not src_id:
@@ -173,11 +195,21 @@ def update_graph_node(state: IngestState) -> dict:
             if tgt_id and tgt_id != src_id:
                 try:
                     journal_ops.reinforce_edge(src_id, tgt_id, rel["relation"])
+                    edge_count += 1
+                    logger.info(
+                        "  + edge: %s —[%s]→ %s",
+                        ext["mention"], rel["relation"], rel["mention"],
+                    )
                 except Exception as e:
                     errors.append(f"edge({ext['mention']}→{rel['mention']}): {e}")
 
-    logger.info("update_graph_node completed in %.2fs, processed %d entities",
-                 time.perf_counter() - t0, processed)
+    new_count = sum(1 for e in state["extractions"] if e.get("is_new"))
+    existing_count = processed - new_count
+    logger.info(
+        "update_graph_node completed in %.2fs: %d entities processed "
+        "(%d NEW, %d existing), %d edges created/reinforced",
+        time.perf_counter() - t0, processed, new_count, existing_count, edge_count,
+    )
     return {"processed_count": processed, "errors": errors}
 
 
@@ -238,16 +270,23 @@ def run_ingest(user_id: str, content: str, entry_date: str, knobs: dict | None =
     result = ingest_app.invoke(init_state)
 
     elapsed = time.perf_counter() - t0
-    logger.info("Ingest pipeline completed in %.2fs: %d entities, %d errors",
-                 elapsed, len(result.get("extractions", [])), len(result.get("errors", [])))
+    new_count = sum(1 for e in result.get("extractions", []) if e.get("is_new"))
+    logger.info(
+        "Ingest pipeline completed in %.2fs: %d entities (%d new, %d existing), %d errors",
+        elapsed,
+        len(result.get("extractions", [])),
+        new_count,
+        len(result.get("extractions", [])) - new_count,
+        len(result.get("errors", [])),
+    )
 
-    # Auto-capture snapshot after ingest
+    # Capture snapshot after ingest so it includes today's new items
     try:
         from app.visualization.snapshot import capture_snapshot
         capture_snapshot(user_id, entry_date)
         logger.info("Snapshot captured for %s on %s", user_id, entry_date)
     except Exception as e:
-        logger.warning("Failed to capture snapshot: %s", e)
+        logger.error("Failed to capture snapshot for %s on %s: %s", user_id, entry_date, e)
 
     return {
         "diary_id": diary["id"],

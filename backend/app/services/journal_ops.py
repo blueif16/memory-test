@@ -24,14 +24,18 @@ class JournalOps:
         domain: str,
         item_type: str = "event",
         summary: str = "",
+        created_at: str | None = None,
     ) -> dict:
-        resp = self.client.table("domain_items").insert({
+        payload = {
             "user_id": user_id,
             "title": title,
             "domain": domain,
             "item_type": item_type,
             "summary": summary,
-        }).execute()
+        }
+        if created_at:
+            payload["created_at"] = created_at
+        resp = self.client.table("domain_items").insert(payload).execute()
         return resp.data[0]
 
     def get_domain_item(self, item_id: str) -> dict | None:
@@ -96,6 +100,18 @@ class JournalOps:
             .select("id, title, domain, item_type, summary")
             .eq("user_id", user_id)
             .eq("lifecycle_status", "active")
+            .execute()
+        )
+        return resp.data
+
+    def get_active_items_as_of(self, user_id: str, as_of_date: str) -> list[dict]:
+        """Return active items created on or before as_of_date."""
+        resp = (
+            self.client.table("domain_items")
+            .select("id, title, domain, item_type, summary")
+            .eq("user_id", user_id)
+            .eq("lifecycle_status", "active")
+            .lte("created_at", as_of_date)
             .execute()
         )
         return resp.data
