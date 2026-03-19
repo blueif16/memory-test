@@ -24,7 +24,6 @@ class Knobs:
 
     # ── Entity resolution ────────────────────────────
     rrf_k: int = 60
-    entity_resolve_threshold: float = 0.02
     match_count: int = 5
 
     # ── Graph traversal ──────────────────────────────
@@ -34,6 +33,10 @@ class Knobs:
     # ── Prompts ──────────────────────────────────────
     extract_prompt: str = ""
     context_doc_prompt: str = ""
+    # Overrides the ReAct agent's merge/create decision rules.
+    # Leave empty to use the default rules in prompts.REACT_AGENT_MERGE_RULES.
+    # The planner can rewrite this to tune entity resolution behavior.
+    agent_merge_rules: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)

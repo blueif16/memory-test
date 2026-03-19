@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from app.config import config
 from app.journal.state import IngestState
-from app.journal.prompts import EXTRACT_PROMPT, REACT_AGENT_SYSTEM_PROMPT
+from app.journal.prompts import EXTRACT_PROMPT, build_react_agent_prompt
 from app.core.providers import get_llm, get_embeddings
 from app.services.journal_ops import journal_ops
 from app.journal.context_builder import rebuild_stale_context_docs
@@ -107,7 +107,9 @@ def react_agent_node(state: IngestState) -> dict:
         try:
             embedding = get_embeddings().embed_query(mention)
             candidates = journal_ops.resolve_entity(
-                mention, embedding, user_id, match_count=5, knobs=knobs
+                mention, embedding, user_id,
+                match_count=knobs.get("match_count", 5) if knobs else 5,
+                knobs=knobs,
             )
             if not candidates:
                 return "No similar nodes found."
@@ -215,6 +217,10 @@ def react_agent_node(state: IngestState) -> dict:
     llm_with_tools = get_llm().bind_tools(all_tools)
 
     # ── Build initial messages ───────────────────────────────────
+    # Allow knobs to override the merge/create decision rules
+    agent_merge_rules = knobs.get("agent_merge_rules") if knobs else None
+    system_prompt = build_react_agent_prompt(agent_merge_rules or None)
+
     extractions_json = json.dumps(extractions, indent=2)
     human_content = (
         f"Entry date: {entry_date}\n\n"
@@ -225,7 +231,7 @@ def react_agent_node(state: IngestState) -> dict:
     )
 
     messages = [
-        SystemMessage(content=REACT_AGENT_SYSTEM_PROMPT),
+        SystemMessage(content=system_prompt),
         HumanMessage(content=human_content),
     ]
 

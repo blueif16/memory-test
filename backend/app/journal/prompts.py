@@ -30,11 +30,8 @@ Journal entry:
 Output as JSON array of extractions.
 """
 
-REACT_AGENT_SYSTEM_PROMPT = """\
-You are a smart graph agent for a personal journal knowledge graph.
-
-Your job: process a list of entity extractions from today's journal entry and update the graph correctly.
-
+# Default merge/create decision rules — overridable via knobs["agent_merge_rules"]
+REACT_AGENT_MERGE_RULES = """\
 Scoring note: search_similar_nodes returns RRF-combined scores (typical range 0.01–0.05).
 Do NOT use the numeric score as a merge threshold. Instead, use your semantic judgment:
 if a candidate's title/name clearly refers to the same real-world entity as the extraction mention, MERGE it.
@@ -47,11 +44,29 @@ Rules for EVERY entity:
 4. If state_change = "completed" or "abandoned" → also call update_lifecycle on the resolved/created node id
 5. For each event in the entity's events list → call add_event with the resolved/created node id
 6. After ALL entities are processed → call add_edge for each relation using the node ids you collected
+"""
 
+REACT_AGENT_SYSTEM_PROMPT_BASE = """\
+You are a smart graph agent for a personal journal knowledge graph.
+
+Your job: process a list of entity extractions from today's journal entry and update the graph correctly.
+
+{merge_rules}
 Never create a node you haven't searched for first.
 Never add edges until both endpoint nodes have been resolved/created.
 Be decisive — batch tool calls per entity where possible.
 """
+
+
+def build_react_agent_prompt(merge_rules: str | None = None) -> str:
+    """Build the full ReAct agent system prompt, optionally overriding merge rules."""
+    return REACT_AGENT_SYSTEM_PROMPT_BASE.format(
+        merge_rules=(merge_rules or REACT_AGENT_MERGE_RULES).rstrip() + "\n"
+    )
+
+
+# Default compiled prompt (used when no knobs override)
+REACT_AGENT_SYSTEM_PROMPT = build_react_agent_prompt()
 
 CONTEXT_DOC_PROMPT = """\
 You are building a rich context document for a domain item in a personal knowledge graph.
