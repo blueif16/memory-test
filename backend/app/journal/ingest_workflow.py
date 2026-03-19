@@ -6,6 +6,7 @@ extract → resolve → update_graph → rebuild_context → END
 from __future__ import annotations
 
 import logging
+import time
 
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field
@@ -51,6 +52,7 @@ class ExtractionResult(BaseModel):
 
 def extract_node(state: IngestState) -> dict:
     """LLM extracts entity mentions from journal entry."""
+    t0 = time.perf_counter()
     prompt = EXTRACT_PROMPT.format(
         entry_date=state["entry_date"],
         diary_entry=state["diary_entry"],
@@ -59,9 +61,11 @@ def extract_node(state: IngestState) -> dict:
         structured_llm = get_llm().with_structured_output(ExtractionResult)
         result = structured_llm.invoke(prompt)
         extractions = [e.model_dump() for e in result.extractions]
+        logger.info("extract_node completed in %.2fs, found %d entities",
+                     time.perf_counter() - t0, len(extractions))
         return {"extractions": extractions, "errors": []}
     except Exception as e:
-        logger.error(f"Extraction failed: {e}")
+        logger.error("Extraction failed: %s", e, exc_info=True)
         return {"extractions": [], "errors": [f"extract: {e}"]}
 
 
@@ -69,6 +73,7 @@ def extract_node(state: IngestState) -> dict:
 
 def resolve_node(state: IngestState) -> dict:
     """Resolve each extracted mention to an existing domain_item or mark as new."""
+    t0 = time.perf_counter()
     resolved = []
     errors = list(state.get("errors", []))
     knobs = state.get("knobs")
@@ -89,12 +94,14 @@ def resolve_node(state: IngestState) -> dict:
                 ext["is_new"] = True
                 ext["resolved_id"] = None
         except Exception as e:
-            logger.error(f"Resolve failed for {ext['mention']}: {e}")
+            logger.error("Resolve failed for %s: %s", ext["mention"], e, exc_info=True)
             ext["is_new"] = True
             ext["resolved_id"] = None
             errors.append(f"resolve({ext['mention']}): {e}")
         resolved.append(ext)
 
+    logger.info("resolve_node completed in %.2fs, resolved %d entities",
+                 time.perf_counter() - t0, len(resolved))
     return {"extractions": resolved, "errors": errors}
 
 
@@ -102,6 +109,7 @@ def resolve_node(state: IngestState) -> dict:
 
 def update_graph_node(state: IngestState) -> dict:
     """Apply all extracted entities, interactions, events, edges to the graph."""
+    t0 = time.perf_counter()
     diary_id = state["diary_id"]
     user_id = state["user_id"]
     errors = list(state.get("errors", []))
@@ -152,7 +160,7 @@ def update_graph_node(state: IngestState) -> dict:
 
             processed += 1
         except Exception as e:
-            logger.error(f"update_graph failed for {ext['mention']}: {e}")
+            logger.error("update_graph failed for %s: %s", ext["mention"], e, exc_info=True)
             errors.append(f"update({ext['mention']}): {e}")
 
     # Create/reinforce edges between co-mentioned entities
@@ -168,6 +176,8 @@ def update_graph_node(state: IngestState) -> dict:
                 except Exception as e:
                     errors.append(f"edge({ext['mention']}→{rel['mention']}): {e}")
 
+    logger.info("update_graph_node completed in %.2fs, processed %d entities",
+                 time.perf_counter() - t0, processed)
     return {"processed_count": processed, "errors": errors}
 
 
@@ -175,10 +185,12 @@ def update_graph_node(state: IngestState) -> dict:
 
 def rebuild_context_node(state: IngestState) -> dict:
     """Rebuild stale context_docs for affected items."""
+    t0 = time.perf_counter()
     try:
         rebuild_stale_context_docs(state["user_id"])
+        logger.info("rebuild_context_node completed in %.2fs", time.perf_counter() - t0)
     except Exception as e:
-        logger.error(f"Context rebuild failed: {e}")
+        logger.error("Context rebuild failed: %s", e, exc_info=True)
         errors = list(state.get("errors", []))
         errors.append(f"rebuild_context: {e}")
         return {"errors": errors}
@@ -208,6 +220,7 @@ ingest_app = create_ingest_workflow()
 
 def run_ingest(user_id: str, content: str, entry_date: str, knobs: dict | None = None) -> dict:
     """Full ingest: save diary entry, run pipeline, return results."""
+    t0 = time.perf_counter()
     diary = journal_ops.save_diary_entry(user_id, content, entry_date)
 
     init_state: dict = {
@@ -223,6 +236,10 @@ def run_ingest(user_id: str, content: str, entry_date: str, knobs: dict | None =
         init_state["knobs"] = knobs
 
     result = ingest_app.invoke(init_state)
+
+    elapsed = time.perf_counter() - t0
+    logger.info("Ingest pipeline completed in %.2fs: %d entities, %d errors",
+                 elapsed, len(result.get("extractions", [])), len(result.get("errors", [])))
 
     return {
         "diary_id": diary["id"],

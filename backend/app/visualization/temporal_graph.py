@@ -20,7 +20,7 @@ DOMAIN_COLORS = {
 
 HTML_TEMPLATE = """\
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <title>Journal Graph — Temporal View</title>
 <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
@@ -29,6 +29,8 @@ HTML_TEMPLATE = """\
   #controls {{ padding: 12px 20px; background: #16213e; display: flex; align-items: center; gap: 16px; }}
   #controls label {{ font-size: 14px; }}
   #date-slider {{ flex: 1; }}
+  #date-slider:focus {{ outline: 2px solid #4A90D9; outline-offset: 2px; }}
+  #date-slider:focus:not(:focus-visible) {{ outline: none; }}
   #date-display {{ font-weight: bold; min-width: 100px; }}
   #legend {{ display: flex; gap: 12px; }}
   .legend-item {{ display: flex; align-items: center; gap: 4px; font-size: 12px; }}
@@ -37,20 +39,21 @@ HTML_TEMPLATE = """\
 </style>
 </head>
 <body>
-<div id="controls">
-  <label>Date:</label>
-  <input type="range" id="date-slider" min="0" max="0" value="0">
-  <span id="date-display">—</span>
-  <div id="legend">
-    <div class="legend-item"><div class="legend-dot" style="background:#4A90D9"></div>career</div>
-    <div class="legend-item"><div class="legend-dot" style="background:#50C878"></div>wealth</div>
-    <div class="legend-item"><div class="legend-dot" style="background:#E74C3C"></div>love</div>
-    <div class="legend-item"><div class="legend-dot" style="background:#F39C12"></div>social</div>
-    <div class="legend-item"><div class="legend-dot" style="background:#9B59B6"></div>study</div>
-    <div class="legend-item"><div class="legend-dot" style="background:#95A5A6"></div>general</div>
+<div id="controls" role="toolbar" aria-label="Timeline controls">
+  <label for="date-slider">Date:</label>
+  <input type="range" id="date-slider" min="0" max="0" value="0"
+         aria-label="Timeline date selector">
+  <span id="date-display" aria-live="polite">—</span>
+  <div id="legend" aria-label="Domain color legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#4A90D9" aria-hidden="true"></div>career</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#50C878" aria-hidden="true"></div>wealth</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#E74C3C" aria-hidden="true"></div>love</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#F39C12" aria-hidden="true"></div>social</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#9B59B6" aria-hidden="true"></div>study</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#95A5A6" aria-hidden="true"></div>general</div>
   </div>
 </div>
-<div id="graph"></div>
+<div id="graph" role="img" aria-label="Journal knowledge graph visualization"></div>
 <script>
 const SNAPSHOTS = {snapshots_json};
 const DOMAIN_COLORS = {domain_colors_json};
@@ -67,6 +70,7 @@ function renderSnapshot(idx) {{
   if (idx >= SNAPSHOTS.length) return;
   const snap = SNAPSHOTS[idx];
   dateDisplay.textContent = snap.date;
+  slider.setAttribute('aria-valuetext', snap.date);
 
   const data = snap.data;
   const nodes = (data.items || []).map(item => ({{

@@ -2,13 +2,19 @@
 FastAPI App - RAG API
 """
 import logging
+import uuid
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import config
 
+logging.basicConfig(
+    level=logging.DEBUG if config.DEBUG else logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 
@@ -30,6 +36,17 @@ class SearchRequest(BaseModel):
 
 app = FastAPI(title="RAG API")
 
+
+class RequestIdMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4())[:8])
+        logger.info("-> %s %s [%s]", request.method, request.url.path, request_id)
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
+
+app.add_middleware(RequestIdMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=config.CORS_ORIGINS.split(","),
@@ -42,6 +59,16 @@ app.add_middleware(
 from app.graph.workflow import app as agent_app, checkpointer
 from app.services.supabase_ops import supabase_ops
 from app.core.providers import get_embeddings
+
+
+@app.on_event("startup")
+async def startup_validation():
+    try:
+        config.validate()
+        logger.info("Configuration validated successfully")
+    except EnvironmentError as e:
+        logger.error("Startup validation failed: %s", e)
+        raise
 
 
 @app.post("/chat")
@@ -57,24 +84,32 @@ async def chat(req: ChatRequest):
             "retries": result.get("retry_count", 0)
         }
     except Exception as e:
-        logger.error(f"Chat failed: {e}")
+        logger.error("Chat failed: %s", e)
         raise HTTPException(500, str(e))
 
 
 @app.post("/search")
 async def search(req: SearchRequest):
     """Direct search."""
-    vec = get_embeddings().embed_query(req.query)
-    results = supabase_ops.retrieve_context_mesh(req.query, vec)
-    return {"results": results[:req.top_k]}
+    try:
+        vec = get_embeddings().embed_query(req.query)
+        results = supabase_ops.retrieve_context_mesh(req.query, vec)
+        return {"results": results[:req.top_k]}
+    except Exception as e:
+        logger.error("Search failed: %s", e)
+        raise HTTPException(500, str(e))
 
 
 @app.post("/ingest")
 async def ingest(req: IngestRequest, bg: BackgroundTasks):
     """Ingest content."""
-    from app.ingestion.extractor import ingest_document
-    bg.add_task(ingest_document, req.content, {"source": req.source} if req.source else {})
-    return {"status": "queued"}
+    try:
+        from app.ingestion.extractor import ingest_document
+        bg.add_task(ingest_document, req.content, {"source": req.source} if req.source else {})
+        return {"status": "queued"}
+    except Exception as e:
+        logger.error("Ingest failed: %s", e)
+        raise HTTPException(500, str(e))
 
 
 @app.get("/health")
@@ -113,35 +148,51 @@ class JournalEvalRequest(_BM):
 @app.post("/journal/ingest")
 async def journal_ingest(req: JournalIngestRequest, bg: BackgroundTasks):
     """Ingest a journal entry: save diary, extract entities, update graph."""
-    from app.journal.ingest_workflow import run_ingest
-    result = run_ingest(req.user_id, req.content, req.entry_date)
-    return result
+    try:
+        from app.journal.ingest_workflow import run_ingest
+        result = run_ingest(req.user_id, req.content, req.entry_date)
+        return result
+    except Exception as e:
+        logger.error("Journal ingest failed: %s", e)
+        raise HTTPException(500, str(e))
 
 
 @app.post("/journal/extract")
 async def journal_extract(req: JournalExtractRequest):
     """Run scoring + extraction, return plain-text briefing."""
-    from app.journal.extraction import run_extraction
-    from datetime import datetime
-    now = datetime.fromisoformat(req.date) if req.date else None
-    text = run_extraction(req.user_id, now)
-    return {"briefing_text": text}
+    try:
+        from app.journal.extraction import run_extraction
+        from datetime import datetime
+        now = datetime.fromisoformat(req.date) if req.date else None
+        text = run_extraction(req.user_id, now)
+        return {"briefing_text": text}
+    except Exception as e:
+        logger.error("Journal extract failed: %s", e)
+        raise HTTPException(500, str(e))
 
 
 @app.post("/journal/score")
 async def journal_score(req: JournalScoreRequest):
     """Score all active domain items for a user."""
-    from app.journal.scoring import run_scoring
-    items = run_scoring(req.user_id)
-    return {"items": items}
+    try:
+        from app.journal.scoring import run_scoring
+        items = run_scoring(req.user_id)
+        return {"items": items}
+    except Exception as e:
+        logger.error("Journal score failed: %s", e)
+        raise HTTPException(500, str(e))
 
 
 @app.get("/journal/graph/{user_id}")
 async def journal_graph(user_id: str):
     """Get full graph state for a user."""
-    from app.services.journal_ops import journal_ops
-    items = journal_ops.get_active_items(user_id)
-    return {"items": items}
+    try:
+        from app.services.journal_ops import journal_ops
+        items = journal_ops.get_active_items(user_id)
+        return {"items": items}
+    except Exception as e:
+        logger.error("Journal graph failed: %s", e)
+        raise HTTPException(500, str(e))
 
 
 @app.get("/journal/snapshots/{user_id}")
@@ -149,9 +200,13 @@ async def journal_snapshots(
     user_id: str, start_date: str | None = None, end_date: str | None = None
 ):
     """Get graph snapshots for a date range."""
-    from app.services.journal_ops import journal_ops
-    snapshots = journal_ops.get_snapshots(user_id, start_date, end_date)
-    return {"snapshots": snapshots}
+    try:
+        from app.services.journal_ops import journal_ops
+        snapshots = journal_ops.get_snapshots(user_id, start_date, end_date)
+        return {"snapshots": snapshots}
+    except Exception as e:
+        logger.error("Journal snapshots failed: %s", e)
+        raise HTTPException(500, str(e))
 
 
 @app.get("/journal/visualize/{user_id}")
@@ -159,22 +214,30 @@ async def journal_visualize(
     user_id: str, start_date: str | None = None, end_date: str | None = None
 ):
     """Generate temporal graph visualization HTML."""
-    from app.visualization.temporal_graph import TemporalGraphVisualizer
-    viz = TemporalGraphVisualizer(user_id)
-    from datetime import date
-    sd = date.fromisoformat(start_date) if start_date else None
-    ed = date.fromisoformat(end_date) if end_date else None
-    html = viz.render_html(sd, ed)
-    from fastapi.responses import HTMLResponse
-    return HTMLResponse(content=html)
+    try:
+        from app.visualization.temporal_graph import TemporalGraphVisualizer
+        viz = TemporalGraphVisualizer(user_id)
+        from datetime import date
+        sd = date.fromisoformat(start_date) if start_date else None
+        ed = date.fromisoformat(end_date) if end_date else None
+        html = viz.render_html(sd, ed)
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(content=html)
+    except Exception as e:
+        logger.error("Journal visualize failed: %s", e)
+        raise HTTPException(500, str(e))
 
 
 @app.post("/journal/eval/run")
 async def journal_eval_run(req: JournalEvalRequest):
     """Run full eval loop (dev only)."""
-    from app.journal.eval.runner import run_eval_loop
-    result = run_eval_loop(req.archetype, req.num_days)
-    return result
+    try:
+        from app.journal.eval.runner import run_eval_loop
+        result = run_eval_loop(req.archetype, req.num_days)
+        return result
+    except Exception as e:
+        logger.error("Journal eval failed: %s", e)
+        raise HTTPException(500, str(e))
 
 
 if __name__ == "__main__":
