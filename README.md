@@ -213,12 +213,67 @@ The system includes a self-tuning evaluation loop that improves extraction quali
 - `entity_resolve_threshold`: minimum RRF score to consider a candidate (default: 0.02)
 - `rrf_k`: RRF fusion constant (default: 60)
 
-### Run the Eval Loop
+### Phase 1: Setup
 
 ```bash
+# Generate a 30-day synthetic scenario (done once, reused across experiments)
+curl -X POST http://localhost:8000/journal/eval/generate \
+  -H "Content-Type: application/json" \
+  -d '{"archetype": "college_student", "num_days": 30}'
+```
+
+### Phase 2: Run the Loop
+
+```bash
+# Run N optimization iterations
 curl -X POST http://localhost:8000/journal/eval/run \
   -H "Content-Type: application/json" \
   -d '{"user_id": "00000000-0000-0000-0000-000000000001", "iterations": 10}'
+```
+
+Each iteration:
+1. Create fresh test user (UUID)
+2. Run 30-day scenario:
+   - Each morning: extract briefing with current knobs
+   - Each evening: ingest journal entry
+3. LLM judge scores each day's briefing (1-5 scale)
+4. Compute mean score across 30 days
+5. Log to results.tsv
+6. If best score: git tag `best-{score}`
+7. LLM planner reads program.md + results.tsv
+8. Proposes next parameter change
+9. Write new knobs.py
+
+### Phase 3: Analysis
+
+```bash
+# View all experiments
+cat backend/app/journal/eval/results.tsv
+
+# Restore best configuration
+git checkout best-4.350
+
+# Or manually edit knobs.py based on insights
+```
+
+### What Gets Optimized
+
+The judge evaluates each day's briefing against the rubric:
+- **Coverage**: Did it surface expected entities/events?
+- **Precision**: Did it avoid stale/irrelevant items?
+- **Insight**: Did it make useful connections?
+
+The metric is simply: `mean(judge_scores)` across all 30 days.
+
+### Example Optimization Run
+
+```
+Iteration 0: score=3.2 (defaults)
+Iteration 1: event_weight=4.0 → score=3.5 (better event coverage)
+Iteration 2: edge_decay_rate=0.05 → score=3.8 (fewer stale items)
+Iteration 3: score_floor_multiplier=0.15 → score=4.1 (cleaner briefings)
+...
+Iteration 9: best score=4.3
 ```
 
 ## Project Structure
