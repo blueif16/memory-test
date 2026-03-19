@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #0a0a0a;
+  --fg: #ededed;
+  --muted: #666;
+  --border: #222;
+  --career: #4A90D9;
+  --wealth: #50C878;
+  --love: #E74C3C;
+  --social: #F39C12;
+  --study: #9B59B6;
+  --general: #95A5A6;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, sans-serif;
+  overflow: hidden;
+}
