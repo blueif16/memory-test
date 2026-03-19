@@ -14,7 +14,6 @@ from app.journal.eval.judge import judge_scenario
 from app.journal.eval.aggregator import aggregate_diagnoses
 from app.journal.eval.metric import compute_metric
 from app.services.journal_ops import journal_ops
-from app.visualization.snapshot import capture_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +47,7 @@ def run_scenario(
         now = datetime.fromisoformat(entry_date)
         extraction_text = run_extraction(user_id, now, knobs=knobs)
 
-        # 3. Save graph snapshot
-        try:
-            snapshot = capture_snapshot(user_id, entry_date)
-        except Exception as e:
-            logger.warning(f"Snapshot failed: {e}")
-            snapshot = None
-
-        # 4. Ingest today's journal entry
+        # 3. Ingest today's journal entry (this also captures a snapshot)
         ingest_result = run_ingest(user_id, journal_entry, entry_date, knobs=knobs)
 
         results.append({
