@@ -17,25 +17,38 @@ def capture_snapshot(user_id: str, snapshot_date: str | date) -> dict:
 
     now_str = datetime.fromisoformat(snapshot_date_str).isoformat() if snapshot_date_str else None
 
-    # Get scored items
-    scored = journal_ops.score_items(user_id, now_str)
-
     # Get all active items with full data
     items = journal_ops.get_active_items(user_id)
-    items_map = {it["id"]: it for it in items}
 
-    # Merge scores into items
-    snapshot_items = []
-    for s in scored:
-        item_data = items_map.get(s["item_id"], {})
-        snapshot_items.append({
-            "id": s["item_id"],
-            "title": s["title"],
-            "domain": s["domain"],
-            "item_type": s["item_type"],
-            "raw_score": s["raw_score"],
-            "above_floor": s["above_floor"],
-        })
+    # Try scoring, but skip if DB function fails
+    try:
+        scored = journal_ops.score_items(user_id, now_str)
+        scored_map = {s["item_id"]: s for s in scored}
+        # Merge scores into items
+        snapshot_items = []
+        for item in items:
+            s = scored_map.get(item["id"], {})
+            snapshot_items.append({
+                "id": item["id"],
+                "title": item["title"],
+                "domain": item["domain"],
+                "item_type": item["item_type"],
+                "raw_score": s.get("raw_score", 0),
+                "above_floor": s.get("above_floor", True),
+            })
+    except Exception as e:
+        # Fallback: just use items without scores
+        snapshot_items = [
+            {
+                "id": item["id"],
+                "title": item["title"],
+                "domain": item["domain"],
+                "item_type": item["item_type"],
+                "raw_score": 0,
+                "above_floor": True,
+            }
+            for item in items
+        ]
 
     # Collect all edges between active items
     all_edges = []

@@ -241,6 +241,14 @@ def run_ingest(user_id: str, content: str, entry_date: str, knobs: dict | None =
     logger.info("Ingest pipeline completed in %.2fs: %d entities, %d errors",
                  elapsed, len(result.get("extractions", [])), len(result.get("errors", [])))
 
+    # Auto-capture snapshot after ingest
+    try:
+        from app.visualization.snapshot import capture_snapshot
+        capture_snapshot(user_id, entry_date)
+        logger.info("Snapshot captured for %s on %s", user_id, entry_date)
+    except Exception as e:
+        logger.warning("Failed to capture snapshot: %s", e)
+
     return {
         "diary_id": diary["id"],
         "entities_found": len(result.get("extractions", [])),

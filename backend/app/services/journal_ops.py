@@ -272,16 +272,17 @@ class JournalOps:
         params: dict = {"p_user_id": user_id}
         if now:
             params["p_now"] = now
-        if knobs:
-            params.update({
-                "p_recency_weight": knobs["recency_weight"],
-                "p_neighbor_weight": knobs["neighbor_weight"],
-                "p_event_weight": knobs["event_weight"],
-                "p_freq_weight": knobs["freq_weight"],
-                "p_edge_decay_rate": knobs["edge_decay_rate"],
-                "p_event_decay_rate": knobs["event_decay_rate"],
-                "p_score_floor_mult": knobs["score_floor_multiplier"],
-            })
+        # Always pass all params to avoid function overload ambiguity
+        from app.config import config
+        params.update({
+            "p_recency_weight": knobs.get("recency_weight", 1.0) if knobs else 1.0,
+            "p_neighbor_weight": knobs.get("neighbor_weight", 0.5) if knobs else 0.5,
+            "p_event_weight": knobs.get("event_weight", 1.0) if knobs else 1.0,
+            "p_freq_weight": knobs.get("freq_weight", 0.3) if knobs else 0.3,
+            "p_edge_decay_rate": knobs.get("edge_decay_rate", config.EDGE_DECAY_RATE) if knobs else config.EDGE_DECAY_RATE,
+            "p_event_decay_rate": knobs.get("event_decay_rate", 0.05) if knobs else 0.05,
+            "p_score_floor_mult": knobs.get("score_floor_multiplier", config.SCORE_FLOOR_MULTIPLIER) if knobs else config.SCORE_FLOOR_MULTIPLIER,
+        })
         resp = self.client.rpc("score_domain_items", params).execute()
         return resp.data
 
