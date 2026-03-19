@@ -14,25 +14,21 @@ A temporal knowledge graph system for personal journal entries with autonomous o
 ### 1. Setup
 
 ```bash
-# Install dependencies
 cd backend
-pip install -e .
+uv sync                  # install all dependencies (use uv, not pip)
+cp .env.example .env     # fill in Supabase URL/key and Gemini API key
 
-# Configure environment
-cp .env.example .env
-# Edit .env with your Supabase and Gemini API keys
-
-# Run migrations in Supabase SQL Editor
-supabase/migrations/20260126_init_gemini_schema.sql
-supabase/migrations/20260317_journal_graph_schema.sql
-supabase/migrations/20260318_parameterize_scoring.sql
+# Run migrations in Supabase SQL Editor (in order):
+# supabase/migrations/20260317_journal_graph_schema.sql
+# supabase/migrations/20260318_parameterize_scoring.sql
+# supabase/migrations/20260319_drop_old_scoring_overloads.sql
 ```
 
 ### 2. Run the API
 
 ```bash
 cd backend
-python -m app.main
+.venv/bin/python -m app.main
 ```
 
 ### 3. Ingest a Journal Entry
@@ -41,8 +37,8 @@ python -m app.main
 curl -X POST http://localhost:8000/journal/ingest \
   -H "Content-Type: application/json" \
   -d '{
-    "user_id": "alice",
-    "content": "Had coffee with Sarah today. She mentioned her startup launch next week. Need to finish the ML project by Friday.",
+    "user_id": "00000000-0000-0000-0000-000000000001",
+    "content": "Had coffee with Sarah today. She mentioned her startup launch next week.",
     "entry_date": "2026-03-17"
   }'
 ```
@@ -50,114 +46,133 @@ curl -X POST http://localhost:8000/journal/ingest \
 ### 4. Get Morning Briefing
 
 ```bash
-curl -X POST http://localhost:8000/journal/extract \
+curl -X POST http://localhost:8000/journal/briefing \
   -H "Content-Type: application/json" \
-  -d '{"user_id": "alice"}'
+  -d '{"user_id": "00000000-0000-0000-0000-000000000001"}'
 ```
 
 ## Architecture
 
-### Core Components
+### Database Connection
 
-- **Ingest Pipeline** (`backend/app/journal/ingest_workflow.py`): LangGraph workflow that extracts entities, resolves them against existing graph, updates relationships
-- **Scoring System** (`backend/app/journal/scoring.py`): Ranks entities by recency decay, neighbor activity, upcoming events, mention frequency
-- **Context Builder** (`backend/app/journal/context_builder.py`): Generates rich summaries from interaction history for better entity resolution
-- **Visualization** (`backend/app/visualization/`): Temporal graph viewer with date slider
+All database access goes through **Supabase** via the PostgREST HTTP API — no direct PostgreSQL connection needed. The client is initialized once and shared across the app:
 
-### Database Schema
+```
+backend/.env
+  SUPABASE_URL=https://<project>.supabase.co
+  SUPABASE_SECRET_KEY=sb_secret_...
+  GEMINI_API_KEY=...
+```
 
-- `domain_items`: Graph nodes (people, goals, projects, places, habits) with lifecycle states
-- `edges`: Weighted relationships with time decay
-- `upcoming_events`: Future events tied to entities with auto-resolution
-- `interactions`: Append-only log of entity mentions
-- `graph_snapshots`: Periodic captures for visualization and evaluation
-- `diary_entries`: Raw journal content
+`backend/app/services/__init__.py` creates a `supabase.Client` using these vars. `JournalOps` (`backend/app/services/journal_ops.py`) wraps all table operations (inserts, selects, RPC calls) and is instantiated as a singleton `journal_ops` imported throughout the app.
 
-## Autonomous Optimization
+Entity resolution uses a Supabase RPC function `resolve_domain_item` that combines:
+- **Vector similarity**: cosine distance on `summary_embedding` (768-dim Gemini embeddings)
+- **Full-text search**: `tsvector` on title + summary + context_doc
+- **RRF fusion**: Reciprocal Rank Fusion to combine both signals into a single score
 
-The system includes a Karpathy-style autoresearch loop that tunes parameters to maximize extraction quality.
+> **Note**: RRF scores range ~0.01–0.05, not 0–1. Do not use them as percentage thresholds.
 
-### How It Works
+### Ingest Pipeline
 
-1. **Frozen Evaluation**: Generates a 30-day synthetic journal scenario once
-2. **Experiment Loop**: For each iteration:
-   - Commits current parameters to git
-   - Runs full scenario with current knobs
-   - LLM judge scores each day's briefing (1-5)
-   - Computes mean score as the metric
-   - LLM planner proposes next parameter change
-   - Writes new knobs.py and repeats
-3. **Git Tracking**: Each experiment is a commit, best configs are tagged
+```
+extract → react_agent → rebuild_context → END
+```
 
-### Tunable Parameters (`backend/app/journal/eval/knobs.py`)
+**`extract` node** (`extract_node`)
+- One structured LLM call with `with_structured_output(ExtractionResult)`
+- Outputs: list of entity mentions with type, domain, snippet, events, relations, state_change
+- Model: Gemini (configured via `CHAT_MODEL` in `.env`)
 
-**Scoring Weights** (how signals combine):
-- `recency_weight`: Recent mentions (default: 2.0)
-- `neighbor_weight`: Graph neighbor activity (default: 1.0)
-- `event_weight`: Upcoming event proximity (default: 3.0)
-- `freq_weight`: Total mention frequency (default: 0.5)
+**`react_agent` node** (`react_agent_node`) — the core intelligence
+- A full **ReAct (Reasoning + Acting) agent** built with LangGraph's tool-calling loop
+- The LLM sees all extracted entities from the journal entry and the existing graph
+- It iteratively calls tools to decide per-entity: **merge into existing node or create new**
+- Loop runs until the LLM produces a response with no tool calls (max 60 iterations)
 
-**Decay Rates** (how fast signals fade):
-- `edge_decay_rate`: Edge/recency decay per day (default: 0.03)
-- `event_decay_rate`: Event proximity decay per day (default: 0.1)
+Available tools (closures that capture `user_id`, `entry_date`, `diary_id` from state):
 
-**Thresholds**:
-- `score_floor_multiplier`: Hide items below median × this (default: 0.1)
-- `entity_resolve_threshold`: RRF score to match existing entity (default: 0.02)
-- `rrf_k`: RRF fusion constant (default: 60)
+| Tool | Purpose |
+|------|--------|
+| `search_similar_nodes(mention, entity_type, domain)` | Calls `resolve_domain_item` RPC — returns up to 5 candidates with id, title, score, summary. **Always called first before any create.** |
+| `create_node(mention, entity_type, domain, snippet)` | Creates a new `domain_items` row with `created_at=entry_date` + initial interaction |
+| `update_node_interaction(item_id, snippet)` | Merges into existing node — appends a new interaction row |
+| `update_lifecycle(item_id, status, note)` | Marks node `completed` or `abandoned` |
+| `add_event(item_id, label, target_date, detail)` | Attaches an upcoming event to a node |
+| `add_edge(source_id, target_id, relation)` | Upserts a relationship edge between two nodes |
 
-**Prompts**:
-- `extract_prompt`: Override extraction prompt (empty = default)
-- `context_doc_prompt`: Override context doc prompt (empty = default)
+The agent system prompt enforces: search before create, semantic title matching (not numeric score threshold), batch tool calls per entity, edges only after all nodes resolved.
 
-### Running Optimization
+**`rebuild_context` node** (`rebuild_context_node`)
+- Regenerates rich `context_doc` for all stale domain items
+- Embeds the doc into `summary_embedding` so future similarity searches work correctly
+
+### Snapshot System
+
+After every ingest, `capture_snapshot(user_id, entry_date)` saves the current graph state to `graph_snapshots`. Temporal filtering (`created_at <= entry_date`) ensures each snapshot only includes nodes that existed at that point in time — this is what makes the graph visualization grow incrementally day by day.
+
+### Scoring
+
+Items are ranked by a weighted combination of:
+- **Recency**: exponential decay on days since last mention
+- **Neighbor activity**: decay-weighted sum of connected nodes' recency
+- **Event proximity**: upcoming events within a time window
+- **Mention frequency**: total interaction count
+
+All weights and decay rates are tunable via `backend/app/journal/eval/knobs.py`.
+
+## Scripts
+
+### `backend/reingest_all.py` — Full chronological re-ingest
+
+Clears all derived data (domain_items, interactions, edges, events, snapshots) for a user, then re-runs the ReAct agent pipeline for every existing diary entry in date order. Use this when the pipeline changes and you want to rebuild the graph from scratch.
 
 ```bash
 cd backend
-
-# Run 10 iterations on college student scenario
-python -m app.journal.eval.loop --iterations 10 --archetype college_student --days 30
-
-# Results logged to backend/app/journal/eval/results.tsv
-# Best config tagged in git as best-{score}
+.venv/bin/python reingest_all.py
+# or with a specific user:
+.venv/bin/python reingest_all.py --user 00000000-0000-0000-0000-000000000001
 ```
 
-### Monitoring Progress
+What it does:
+1. Fetches all `diary_entries` for the user ordered by `entry_date`
+2. Deletes: `domain_item_interactions`, `domain_item_edges`, `upcoming_events`, `domain_items`, `graph_snapshots`
+3. For each unique date (in order), runs `ingest_app.invoke()` for each diary entry
+4. Captures one snapshot per date after all entries for that date are processed
+5. Prints a growth table showing items/edges/scores per snapshot
+
+### `backend/test_integration.py` — Real end-to-end integration test
+
+Hits actual Supabase + Gemini. Creates two diary entries for a throwaway test user and verifies entity merging works correctly.
 
 ```bash
-# View results
-cat backend/app/journal/eval/results.tsv
-
-# Check git history
-git log --oneline | grep experiment
-
-# Restore best config
-git checkout best-4.200  # or whatever tag
+.venv/bin/python test_integration.py           # run test
+.venv/bin/python test_integration.py --cleanup  # delete test data
 ```
 
-### Strategy Guide
+Asserts:
+- Nodes created with correct `created_at` matching `entry_date`
+- Recurring entities (Sarah, ML Project) are merged, not duplicated
+- New entities from entry 2 are created
+- Sarah accumulates 2 interactions across 2 diary entries
 
-The LLM planner follows `backend/app/journal/eval/program.md`:
+### `backend/app/visualization/regenerate_snapshots.py` — Snapshot-only regeneration
 
-- Changes ONE parameter per experiment for clear attribution
-- Makes moderate changes (25-50% of current value)
-- Reviews all prior results before deciding
-- Uses failure-pattern-to-fix mappings:
-  - Missing deadlines → increase `event_weight`
-  - Stale items appearing → increase `edge_decay_rate`
-  - Wrong entity matches → adjust `entity_resolve_threshold`
-  - Briefing too cluttered → increase `score_floor_multiplier`
+Rebuild snapshots from existing graph data without re-ingesting. Use when you want to recalculate scores/snapshot format but the domain_items data is already correct.
+
+```bash
+.venv/bin/python -m app.visualization.regenerate_snapshots <user_id>
+```
 
 ## API Endpoints
 
-### Journal Operations
+### Journal Graph
 
-- `POST /journal/ingest`: Save diary entry and extract entities
-- `POST /journal/extract`: Generate morning briefing
-- `POST /journal/score`: Score all active items
-- `GET /journal/graph/{user_id}`: Fetch active items
-- `GET /journal/snapshots/{user_id}`: Retrieve snapshots for date range
-- `GET /journal/visualize/{user_id}`: Generate temporal graph HTML
+- `POST /journal/ingest`: Ingest a journal entry (runs full ReAct pipeline)
+- `POST /journal/briefing`: Get morning briefing for a user
+- `GET /journal/graph/{user_id}`: Current graph state (nodes + edges)
+- `GET /journal/graph/{user_id}/temporal`: Temporal graph HTML with date slider
+- `POST /journal/snapshots/regenerate`: Rebuild snapshots for a user
 
 ### RAG Operations
 
@@ -165,158 +180,78 @@ The LLM planner follows `backend/app/journal/eval/program.md`:
 - `POST /search`: Direct hybrid search
 - `POST /ingest`: Ingest content into RAG store
 
-### Evaluation
+## Autonomous Optimization
 
-- `POST /journal/eval/run`: Run full eval loop (dev only)
+The system includes a self-tuning evaluation loop that improves extraction quality by running experiments and tracking scores.
 
-## Debug Tools
+### How It Works
+
+1. **Scenario Generation**: LLM generates a synthetic 30-day journal scenario with per-day rubrics
+2. **Frozen Evaluation**: Scenario is generated once and reused across all experiments
+3. **Experiment Loop** (`backend/app/journal/eval/loop.py`):
+   - Commits current knobs to git
+   - Ingests all 30 days with current parameters
+   - LLM judge scores each day's briefing (1–5) against rubric
+   - Computes mean score as the metric
+   - LLM planner proposes next parameter change
+   - Writes new `knobs.py` and repeats
+4. **Git Tracking**: Each experiment is a commit; best configs are tagged `best-{score}`
+
+### Tunable Parameters (`backend/app/journal/eval/knobs.py`)
+
+**Scoring Weights**:
+- `recency_weight` (default: 2.0)
+- `neighbor_weight` (default: 1.0)
+- `event_weight` (default: 3.0)
+- `freq_weight` (default: 0.5)
+
+**Decay Rates**:
+- `edge_decay_rate`: edge/recency decay per day (default: 0.03)
+- `event_decay_rate`: event proximity decay per day (default: 0.1)
+
+**Resolution**:
+- `entity_resolve_threshold`: minimum RRF score to consider a candidate (default: 0.02)
+- `rrf_k`: RRF fusion constant (default: 60)
+
+### Run the Eval Loop
 
 ```bash
-# Install debug extras
-pip install -e ".[debug]"
-
-# Visualize knowledge graph
-rag-debug visualize --namespace video_styles --output graph.html
-
-# Debug search query
-rag-debug debug "energetic fast cuts" --namespace video_styles
-
-# Run robustness tests
-rag-debug test --namespace video_styles
+curl -X POST http://localhost:8000/journal/eval/run \
+  -H "Content-Type: application/json" \
+  -d '{"user_id": "00000000-0000-0000-0000-000000000001", "iterations": 10}'
 ```
-
-See `backend/app/debug/README.md` for full debug toolkit documentation.
 
 ## Project Structure
 
 ```
 ├── backend/
 │   ├── app/
-│   │   ├── core/              # Portable RAG module
-│   │   │   ├── rag_store.py   # RAGStore class
-│   │   │   ├── gemini_embeddings.py
-│   │   │   ├── providers.py   # Shared LLM/embeddings
-│   │   │   └── adapters.py    # Data extraction
-│   │   ├── journal/           # Journal graph system
-│   │   │   ├── ingest_workflow.py
-│   │   │   ├── context_builder.py
-│   │   │   ├── scoring.py
-│   │   │   ├── extraction.py
-│   │   │   └── eval/          # Optimization loop
-│   │   │       ├── loop.py    # Main optimization loop
-│   │   │       ├── knobs.py   # Tunable parameters
-│   │   │       ├── metric.py  # Scalar score computation
-│   │   │       ├── runner.py  # Scenario execution
-│   │   │       ├── judge.py   # LLM evaluation
-│   │   │       └── program.md # Strategy guide
-│   │   ├── graph/             # LangGraph workflow
-│   │   ├── services/          # Supabase operations
-│   │   ├── visualization/     # Graph rendering
-│   │   └── main.py            # FastAPI app
-│   └── pyproject.toml
-├── supabase/
-│   └── migrations/            # SQL schema
-├── SPECIFICATION.md           # RAG setup guide for LLMs
-└── README.md
-```
-
-## Configuration
-
-Environment variables (`.env`):
-
-```bash
-# Supabase
-SUPABASE_URL=https://xxx.supabase.co
-SUPABASE_SECRET_KEY=sb_secret_your_key_here
-DATABASE_URL=postgresql://postgres:password@db.xxx.supabase.co:5432/postgres
-
-# Gemini API
-GEMINI_API_KEY=your-gemini-api-key
-
-# Optional tuning
-EMBEDDING_MODEL=gemini-embedding-001
-EMBEDDING_DIM=768
-CHAT_MODEL=gemini-2.0-flash-exp
-MATCH_COUNT=5
-RRF_K=60
-GRAPH_DEPTH=2
-```
-
-## Development
-
-```bash
-# Run tests
-cd backend
-pytest
-
-# Start with hot reload
-uvicorn app.main:app --reload
-
-# Format code
-ruff format .
-```
-
-## How the Optimization Loop Works
-
-### Phase 1: Scenario Generation (Once)
-
-```bash
-# LLM generates a 30-day synthetic journal for "college_student" archetype
-# Each day has:
-# - Journal entry text
-# - Rubric with expected entities/events to surface
-# Cached in backend/app/journal/eval/scenario_cache.json
-```
-
-### Phase 2: Experiment Iteration (N times)
-
-```
-For iteration i in 1..N:
-  1. Load current knobs.py
-  2. Git commit: "experiment-{i}: recency_weight=2.5"
-  3. Create fresh test user (UUID)
-  4. Run 30-day scenario:
-     - Each morning: extract briefing with current knobs
-     - Each evening: ingest journal entry
-  5. LLM judge scores each day's briefing (1-5 scale)
-  6. Compute mean score across 30 days
-  7. Log to results.tsv
-  8. If best score: git tag "best-{score}"
-  9. LLM planner reads program.md + results.tsv
-  10. Proposes next parameter change
-  11. Write new knobs.py
-```
-
-### Phase 3: Analysis
-
-```bash
-# View all experiments
-cat backend/app/journal/eval/results.tsv
-
-# Restore best configuration
-git checkout best-4.350
-
-# Or manually edit knobs.py based on insights
-```
-
-### What Gets Optimized
-
-The judge evaluates each day's briefing against the rubric:
-- **Coverage**: Did it surface expected entities/events?
-- **Precision**: Did it avoid stale/irrelevant items?
-- **Insight**: Did it make useful connections?
-
-The metric is simply: `mean(judge_scores)` across all 30 days.
-
-### Example Optimization Run
-
-```
-Iteration 0: score=3.2 (defaults)
-Iteration 1: event_weight=4.0 → score=3.5 (better event coverage)
-Iteration 2: edge_decay_rate=0.05 → score=3.8 (fewer stale items)
-Iteration 3: score_floor_multiplier=0.15 → score=4.1 (cleaner briefings)
-...
-Iteration 9: best score=4.3
+│   │   ├── core/                    # Shared LLM/embeddings providers
+│   │   │   ├── providers.py         # get_llm(), get_embeddings() singletons
+│   │   │   └── gemini_embeddings.py # Gemini embedding wrapper
+│   │   ├── services/
+│   │   │   └── journal_ops.py       # All DB operations (JournalOps singleton)
+│   │   ├── journal/
+│   │   │   ├── ingest_workflow.py   # ReAct agent pipeline (extract→react_agent→rebuild_context)
+│   │   │   ├── prompts.py           # EXTRACT_PROMPT, REACT_AGENT_SYSTEM_PROMPT, CONTEXT_DOC_PROMPT
+│   │   │   ├── context_builder.py   # Rebuilds context_doc + summary_embedding for nodes
+│   │   │   ├── scoring.py           # Decay-weighted scoring
+│   │   │   ├── state.py             # IngestState TypedDict
+│   │   │   └── eval/                # Autonomous optimization loop
+│   │   │       ├── loop.py          # Main experiment loop
+│   │   │       ├── knobs.py         # Tunable parameters
+│   │   │       ├── scenario_generator.py  # LLM-generated test scenarios
+│   │   │       ├── judge.py         # LLM judge for briefing quality
+│   │   │       └── runner.py        # Per-iteration ingest + eval runner
+│   │   └── visualization/
+│   │       ├── snapshot.py          # capture_snapshot() — temporal graph capture
+│   │       └── regenerate_snapshots.py  # CLI: rebuild snapshots from existing data
+│   ├── reingest_all.py              # CLI: clear derived tables + re-ingest chronologically
+│   ├── test_integration.py          # Real Supabase integration test
+│   └── tests/
+│       └── test_react_agent.py      # Unit tests for ReAct agent node
+└── supabase/
+    └── migrations/                  # SQL schema + RPC functions
 ```
 
 ## License
