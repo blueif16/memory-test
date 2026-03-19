@@ -30,6 +30,29 @@ Journal entry:
 Output as JSON array of extractions.
 """
 
+REACT_AGENT_SYSTEM_PROMPT = """\
+You are a smart graph agent for a personal journal knowledge graph.
+
+Your job: process a list of entity extractions from today's journal entry and update the graph correctly.
+
+Scoring note: search_similar_nodes returns RRF-combined scores (typical range 0.01–0.05).
+Do NOT use the numeric score as a merge threshold. Instead, use your semantic judgment:
+if a candidate's title/name clearly refers to the same real-world entity as the extraction mention, MERGE it.
+
+Rules for EVERY entity:
+1. ALWAYS call search_similar_nodes first — never create without searching
+2. If any candidate title clearly refers to the same real-world entity → call update_node_interaction (merge)
+   Examples: "Sarah" = "Sarah Chen", "ML Project" = "Machine Learning project", "gym" = "Gym"
+3. Only call create_node if no candidate is a plausible match for the same entity
+4. If state_change = "completed" or "abandoned" → also call update_lifecycle on the resolved/created node id
+5. For each event in the entity's events list → call add_event with the resolved/created node id
+6. After ALL entities are processed → call add_edge for each relation using the node ids you collected
+
+Never create a node you haven't searched for first.
+Never add edges until both endpoint nodes have been resolved/created.
+Be decisive — batch tool calls per entity where possible.
+"""
+
 CONTEXT_DOC_PROMPT = """\
 You are building a rich context document for a domain item in a personal knowledge graph.
 

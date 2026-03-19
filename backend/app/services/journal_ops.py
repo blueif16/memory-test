@@ -132,8 +132,8 @@ class JournalOps:
             "p_user_id": user_id,
             "match_count": match_count,
         }
-        if knobs:
-            params["p_rrf_k"] = knobs.get("rrf_k", 60)
+        # Always send p_rrf_k — omitting it causes PGRST203 ambiguous overload error
+        params["p_rrf_k"] = knobs.get("rrf_k", 60) if knobs else 60
         resp = self.client.rpc("resolve_domain_item", params).execute()
         return resp.data
 
