@@ -145,6 +145,16 @@ class JournalEvalRequest(_BM):
     num_days: int = 30
 
 
+class OptimizationRequest(_BM):
+    num_iterations: int = 10
+    archetype: str = "college_student"
+    num_days: int = 30
+
+
+# In-memory optimization run tracker
+_optimization_runs: dict[str, dict] = {}
+
+
 @app.post("/journal/ingest")
 async def journal_ingest(req: JournalIngestRequest, bg: BackgroundTasks):
     """Ingest a journal entry: save diary, extract entities, update graph."""
@@ -238,6 +248,46 @@ async def journal_eval_run(req: JournalEvalRequest):
     except Exception as e:
         logger.error("Journal eval failed: %s", e)
         raise HTTPException(500, str(e))
+
+
+@app.get("/journal/users")
+async def journal_users():
+    """List all users who have diary entries."""
+    try:
+        from app.services.journal_ops import journal_ops
+        resp = journal_ops.client.table("diary_entries").select("user_id").execute()
+        user_ids = sorted(set(row["user_id"] for row in resp.data))
+        return {"users": user_ids}
+    except Exception as e:
+        logger.error("Journal users failed: %s", e)
+        raise HTTPException(500, str(e))
+
+
+@app.post("/journal/eval/optimize")
+async def journal_optimize(req: OptimizationRequest, bg: BackgroundTasks):
+    """Start optimization loop in background."""
+    run_id = str(uuid.uuid4())[:8]
+    _optimization_runs[run_id] = {"status": "running", "result": None}
+
+    def _run(rid: str, iters: int, arch: str, days: int):
+        try:
+            from app.journal.eval.loop import run_optimization_loop
+            result = run_optimization_loop(iters, arch, days)
+            _optimization_runs[rid] = {"status": "completed", "result": result}
+        except Exception as e:
+            logger.error("Optimization run %s failed: %s", rid, e)
+            _optimization_runs[rid] = {"status": "failed", "result": str(e)}
+
+    bg.add_task(_run, run_id, req.num_iterations, req.archetype, req.num_days)
+    return {"run_id": run_id, "status": "started"}
+
+
+@app.get("/journal/eval/optimize/{run_id}")
+async def journal_optimize_status(run_id: str):
+    """Poll optimization run status."""
+    if run_id not in _optimization_runs:
+        raise HTTPException(404, "Run not found")
+    return _optimization_runs[run_id]
 
 
 if __name__ == "__main__":
