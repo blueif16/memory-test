@@ -74,6 +74,33 @@ Persists new Knobs dataclass"]
     H --> |"next iteration"| D
 ```
 
+### Journal Scenario Generation (`eval/scenario_generator.py`)
+
+The eval loop synthesizes realistic test data by prompting an LLM with an **archetype** and **number of days**. Each scenario is a coherent multi-day story with recurring entities, evolving relationships, and approaching/passing events.
+
+**Trigger:** `generate_scenario(archetype, num_days)` — called once per optimization iteration.
+
+**Output schema:**
+
+```
+Scenario
+└── days: list[DayEntry]
+    ├── day: int              # sequential day number
+    ├── date: str             # YYYY-MM-DD
+    ├── journal_entry: str    # synthetic diary text
+    └── rubric: Rubric
+        ├── best_if_covered:         list[str]  # aspirational — shows deep understanding
+        ├── good_if_covered:         list[str]  # expected bread-and-butter items
+        ├── problem_if_covered:      list[str]  # should NOT appear (stale/resolved)
+        └── problem_if_not_covered:  list[str]  # MUST appear (critical failures if missing)
+```
+
+**Built-in archetypes** (passed as free-text to the LLM, any string works):
+- `college_student` — classes, exams, social life, part-time job
+- any custom archetype string e.g. `startup_founder`, `freelance_designer`
+
+The rubric drives the LLM judge in `eval/judge.py`: each day's morning briefing is scored 1–5 by checking which `good_if_covered` items appeared, which `problem_if_not_covered` items are missing (critical failures), and which `problem_if_covered` items leaked through (false positives).
+
 ### Tunable Knobs (`eval/knobs.py`)
 
 | Group | Parameters |
