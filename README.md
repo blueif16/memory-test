@@ -9,6 +9,84 @@ A temporal knowledge graph system for personal journal entries with autonomous o
 - **Smart Briefings**: Morning summaries of what matters today based on recency, upcoming events, and graph connections
 - **Autonomous Optimization**: Self-tuning evaluation loop that improves extraction quality
 
+## System Flow
+
+### Write Path — Diary Ingest
+
+```mermaid
+flowchart TD
+    A["POST /journal/ingest
+app/main.py"] --> B["save_diary_entry
+services/journal_ops.py"]
+    B --> C["extract_node
+ingest_workflow.py
+LLM → entities / events / relations"]
+    C --> D["react_agent_node
+ingest_workflow.py
+ReAct: search_entity → upsert_entity → link_entities"]
+    D --> E["rebuild_context_node
+journal/context_builder.py
+Rebuild context_doc + summary_embedding"]
+    E --> F["capture_snapshot
+visualization/snapshot.py"]
+```
+
+### Read Path — Morning Briefing
+
+```mermaid
+flowchart TD
+    A["POST /journal/briefing
+app/main.py"] --> B["run_extraction
+journal/extraction.py"]
+    B --> C["extract_briefing_data RPC
+services/journal_ops.py
+Decay-weighted scoring via Knobs"]
+    C --> D["format_briefing
+journal/extraction.py
+Grouped plain-text by domain"]
+```
+
+### Autonomous Optimization Loop
+
+```mermaid
+flowchart TD
+    A["POST /journal/eval/optimize
+app/main.py — background thread"] --> B["run_optimization_loop
+eval/loop.py"]
+    B --> C["generate_scenario
+eval/scenario_generator.py
+LLM → N days of entries + rubrics"]
+    C --> D["run_scenario
+eval/runner.py
+For each day: run_extraction → run_ingest"]
+    D --> E["judge_scenario
+eval/judge.py
+LLM scores briefing vs rubric 1–5"]
+    E --> F["compute_metric + aggregate_diagnoses
+eval/metric.py + eval/aggregator.py
+Scalar score + systemic issues"]
+    F --> G["plan_next_experiment
+eval/loop.py
+LLM reads history → picks knob to change"]
+    G --> H["write_knobs + git commit
+eval/loop.py → eval/knobs.py
+Persists new Knobs dataclass"]
+    H --> |"next iteration"| D
+```
+
+### Tunable Knobs (`eval/knobs.py`)
+
+| Group | Parameters |
+|---|---|
+| Scoring weights | `recency_weight`, `neighbor_weight`, `event_weight`, `freq_weight` |
+| Decay rates | `edge_decay_rate`, `event_decay_rate` |
+| Entity resolution | `rrf_k`, `match_count` |
+| Graph traversal | `graph_depth`, `graph_hop_decay` |
+| Score floor | `score_floor_multiplier` |
+| Prompts | `extract_prompt`, `context_doc_prompt`, `agent_merge_rules` |
+
+The optimization loop edits `eval/knobs.py` directly and git-commits each change. The loop calls `importlib.reload` to pick up new values mid-run without restarting the server.
+
 ## Quick Start
 
 ### 1. Setup
